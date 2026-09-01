@@ -1,4 +1,5 @@
 import express, { Express, Request, Response, NextFunction } from "express";
+import { setRuntimeToken as setMcpRuntimeToken } from "./mcp-tools.js";
 
 const BASE_URL = process.env.SEISMIC_BASE_URL ?? "https://api.seismic.com/livedoc";
 const STATUS_NAMES = ["Queued", "Generating", "Completed", "Failed"];
@@ -180,6 +181,7 @@ export function registerRoutes(app: Express) {
     const token = (req.body as Record<string, unknown>).token;
     if (typeof token !== "string" || !token) return res.status(400).json({ error: "token required" });
     _runtimeToken = token;
+    setMcpRuntimeToken(token);
     res.json({ ok: true });
   });
 
@@ -287,8 +289,8 @@ export function registerRoutes(app: Express) {
       `/v3/generatedLivedocs/${generatedLivedocId}/outputs/${req.params.outputId}/content?redirect=false`
     );
     if (dlResult.status !== 200) return res.status(dlResult.status).json({ error: "Download URL fetch failed", detail: dlResult.body });
-    const urlData = dlResult.body as { url?: string; downloadUrl?: string; Url?: string };
-    const fileUrl = urlData.url ?? urlData.downloadUrl ?? urlData.Url;
+    const urlData = dlResult.body as { url?: string; downloadUrl?: string; Url?: string; DownloadUrl?: string };
+    const fileUrl = urlData.url ?? urlData.downloadUrl ?? urlData.Url ?? urlData.DownloadUrl;
     if (!fileUrl) return res.status(500).json({ error: "No URL in download response", detail: dlResult.body });
 
     // Stream the file to the client

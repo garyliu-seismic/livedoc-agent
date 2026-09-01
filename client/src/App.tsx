@@ -1,6 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import TemplateSearch from "./components/TemplateSearch";
-import FormPage from "./components/FormPage";
+import ChatPanel from "./components/ChatPanel";
 
 const styles = `
   .app-header { background: #fff; border-bottom: 1px solid #e5e5e5; padding: 0 24px; height: 52px; display: flex; align-items: center; gap: 12px; position: sticky; top: 0; z-index: 10; }
@@ -41,7 +41,7 @@ export default function App() {
         <main className="app-main">
           <Routes>
             <Route path="/" element={<TemplateSearch />} />
-            <Route path="/form" element={<FormPage />} />
+            <Route path="/form" element={<ChatPanel />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
