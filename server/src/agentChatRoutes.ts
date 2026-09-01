@@ -7,7 +7,7 @@ dotenv.config();
 const router = Router();
 const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "http://localhost:11434/v1";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "qwen3:latest";
-const MAX_TOOL_ROUNDS = 6;
+const MAX_TOOL_ROUNDS = 8;
 
 // ====================== MCP -> OpenAI tool schema ======================
 // TOOL_LIST / handleToolCall come from mcp-server.ts, the single source of truth
@@ -21,11 +21,42 @@ const TOOLS_SCHEMA = TOOL_LIST.map(t => ({
   },
 }));
 
-const SYSTEM_PROMPT =
-  "你是 Seismic LiveDoc 助手。可以使用提供的工具搜索模板、查看表单字段、生成文档、查询生成状态并下载结果。" +
-  "只要用户的请求能用现有工具直接处理（例如提到关键词、模板名、'找'、'搜索'、'生成'等），就必须立即调用对应工具，" +
-  "不要仅用文字反问用户或要求澄清；search_templates 的 searchText 可以直接使用用户话里的关键词，不必等待更多信息。" +
-  "只有在调用工具后仍缺少必要参数（例如 teamSiteId/versionId）时，才向用户提问。";
+const SYSTEM_PROMPT = `你是 Seismic LiveDoc 助手，通过工具帮用户搜索模板、查看表单、生成文档、查询状态、下载结果，或在字段复杂时打开网页表单让用户填写。
+
+CRITICAL_RULES（必须严格遵守，优先级高于其他考虑）：
+1. 只要用户的请求可以用现有工具处理（提到关键词、模板名、"找"、"搜索"、"生成"、"下载"、"查状态"等），必须立即调用对应工具；不要用文字反问或要求澄清来代替调用工具。
+2. search_templates 的 searchText 直接取用户话里的关键词，不必等更多信息。
+3. 只读查询链路（search_templates → get_template_form → poll_generation_status → download_generated_file）里，只要已有结果能推出下一步需要的参数（比如唯一匹配的 teamSiteId/versionId，或已知的 generatedLivedocId/outputId），就应该在同一轮对话里连续调用下一个工具，不要每一步都停下来问用户确认；只有信息不足以确定参数、或有多个匹配结果需要用户选择时才停下来问。
+4. generate_live_doc 会产生真实副作用（提交生成任务），调用前必须已经从用户或表单结果里拿到明确的字段数据，不能用占位符或猜测的值填充。
+5. 严禁自己拼接、猜测或臆造任何 URL（下载链接、表单链接等）。下载地址只能来自 download_generated_file 返回的 url 字段；表单链接只能来自 open_form_ui 返回的 url 字段。回复用户时必须原样复制，一个字符都不能改，也不能用 teamSiteId/versionId/blobId 等参数自己拼出新地址。如果还没调用过对应工具，就不要在回复里给出任何链接。
+6. 字段较多或包含表格/变量列表等复杂结构的模板，不要在聊天里逐个字段追问用户，改为调用 open_form_ui 把链接给用户，请他们填完提交；不要在同一轮里紧接着调用 get_form_result（用户还没来得及填），等用户确认已提交、或用户主动询问进度时，再用 open_form_ui 返回的 token 调用 get_form_result。
+7. 只有在调用工具后仍缺少必要参数时，才向用户提问。`;
+
+// Keep short "grounding" reminders (real URLs/tokens) visible to the LLM even
+// once the raw conversation grows past the recent-window cutoff below.
+const RECENT_WINDOW = 20;
+
+function buildLLMContext(context: any[]): any[] {
+  const systemPrompt = context[0];
+  const pinned = context.slice(1).filter(m => m.pinned);
+  const recent = context.slice(-RECENT_WINDOW);
+  const recentSet = new Set(recent);
+  const extraPinned = pinned.filter(m => !recentSet.has(m));
+  const combined = recent[0] === systemPrompt ? recent : [systemPrompt, ...extraPinned, ...recent];
+  return combined.map(({ pinned, ...rest }: any) => rest);
+}
+
+function extractField(resultText: string, ...keys: string[]): string | null {
+  try {
+    const parsed = JSON.parse(resultText);
+    for (const key of keys) {
+      if (typeof parsed?.[key] === "string") return parsed[key];
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
 
 async function callLLM(messages: any[], useTools: boolean): Promise<any> {
   const resp = await fetch(OPENAI_BASE_URL + "/chat/completions", {
@@ -59,11 +90,12 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
 
     let llmReply = "";
     let toolsUsed = false;
+    let formUrl: string | null = null;
 
     try {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         const isLastRound = round === MAX_TOOL_ROUNDS - 1;
-        const choice = await callLLM(context.slice(-20), !isLastRound);
+        const choice = await callLLM(buildLLMContext(context), !isLastRound);
 
         if (!choice) {
           llmReply = "Agent 未生成有效内容。";
@@ -79,6 +111,8 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
         toolsUsed = true;
         context.push(choice); // assistant turn requesting tool_calls
 
+        const realUrls: string[] = [];
+
         for (const tc of choice.tool_calls) {
           const toolName = tc.function.name;
           console.log(`[Agent] Executing MCP Tool: ${toolName}`, tc.function.arguments);
@@ -88,11 +122,30 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
             const args = JSON.parse(tc.function.arguments || "{}");
             const result = await handleToolCall(toolName, args);
             resultText = JSON.stringify(result).slice(0, 4000);
+            if (toolName === "download_generated_file") {
+              const url = extractField(resultText, "url", "DownloadUrl");
+              if (url) realUrls.push(url);
+            }
+            if (toolName === "open_form_ui") {
+              const url = extractField(resultText, "url");
+              if (url) {
+                realUrls.push(url);
+                formUrl = url;
+              }
+            }
           } catch (err) {
             resultText = `Error: ${(err as Error).message}`;
           }
 
           context.push({ role: "tool", tool_call_id: tc.id, content: resultText });
+        }
+
+        if (realUrls.length > 0) {
+          context.push({
+            role: "system",
+            content: `真实地址（必须原样复制，不能修改任何字符）：\n${realUrls.join("\n")}`,
+            pinned: true,
+          });
         }
       }
     } catch (e) {
@@ -102,7 +155,7 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
 
     (req.app as any).locals.conversations[sessionId] = context;
 
-    res.json({ success: true, message: llmReply, toolsUsed });
+    res.json({ success: true, message: llmReply, toolsUsed, formUrl });
   } catch (err) {
     console.error("🔴 General Agent Error:", err);
     res.status(500).json({ error: "Internal Server Error", detail: (err as Error).message });

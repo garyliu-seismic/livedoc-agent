@@ -9,6 +9,7 @@
  */
 
 const BASE_URL = process.env.SEISMIC_BASE_URL ?? "https://api.seismic-dev.com/livedoc";
+const CLIENT_BASE_URL = process.env.CLIENT_BASE_URL ?? "http://localhost:5173";
 let _runtimeToken: string = "";
 
 export function setRuntimeToken(token: string): void {
@@ -225,7 +226,7 @@ export async function pollGenerationStatus(params: { generatedLivedocId: string 
 }
 
 // ================================================================
-// Tool 5: get_generation_result — Retrieve generation result (from in-memory store)
+// Tool 5: get_form_result — Retrieve generation result (from in-memory store)
 // ================================================================
 export function setGenerationResult(token: string, data: Record<string, unknown>): void {
   _resultStore.set(token, { ...data, storedAt: Date.now() });
@@ -237,6 +238,33 @@ export function getGenerationResult(token: string): Record<string, unknown> | nu
 }
 
 const _resultStore = new Map<string, { generatedLivedocId: string; outputs: unknown[]; storedAt: number }>();
+
+// ================================================================
+// Tool: open_form_ui — Hand complex data entry off to the real form page
+// (FormPage.tsx / FormBuilder.tsx) instead of collecting fields via chat.
+// Returns a URL the client should open in a new tab, plus the token that
+// get_form_result later reads back. Non-blocking: the agent does NOT wait
+// here — the user submits on their own time, then either tells the agent
+// or the agent's next turn calls get_form_result to check.
+// ================================================================
+export function openFormUi(params: {
+  teamSiteId: string;
+  versionId: string;
+  context?: string;
+  prefillValues?: Record<string, unknown>;
+}): { url: string; token: string } {
+  const token = crypto.randomUUID();
+
+  const query = new URLSearchParams({
+    teamSiteId: params.teamSiteId,
+    versionId: params.versionId,
+    token,
+  });
+  if (params.context) query.set("context", Buffer.from(params.context, "utf-8").toString("base64"));
+  if (params.prefillValues) query.set("prefill", Buffer.from(JSON.stringify(params.prefillValues), "utf-8").toString("base64"));
+
+  return { url: `${CLIENT_BASE_URL}/fill?${query.toString()}`, token };
+}
 
 // ================================================================
 // Tool 6: download_generated_file — Download output file

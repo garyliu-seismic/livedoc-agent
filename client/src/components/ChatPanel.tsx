@@ -55,6 +55,10 @@ export default function ChatPanel() {
       };
       
       setMessages(prev => [...prev, assistantMsg]);
+
+      if (data.formUrl) {
+        window.open(data.formUrl, '_blank', 'noopener,noreferrer');
+      }
     } catch (err: any) {
       console.error(err);
       setMessages(prev => [...prev, { 

@@ -24,6 +24,8 @@ import {
   pollGenerationStatus,
   setGenerationResult,
   getGenerationResult,
+  downloadGeneratedFile,
+  openFormUi,
 } from "./mcp-tools.js";
 
 // ================================================================
@@ -80,13 +82,40 @@ export const TOOL_LIST: MCPTool[] = [
     },
   },
   {
-    name: "get_generation_result",
-    description: "Retrieve the cached result of a LiveDoc form submission from in-memory store. Use when you previously stored a result and need to read it back.",
+    name: "download_generated_file",
+    description: "Get the real, signed download URL for one completed output of a generated LiveDoc. Call this before giving the user any download link — NEVER construct or guess a download URL yourself.",
     schema: {
       type: "object",
       properties: {
-        token: { type: "string", description: "The result token" },
+        generatedLivedocId: { type: "string" },
+        outputId: { type: "string", description: "The output's id, from poll_generation_status results" },
       },
+      required: ["generatedLivedocId", "outputId"],
+    },
+  },
+  {
+    name: "open_form_ui",
+    description: "For templates with many or complex fields, open the real form page in the user's browser instead of collecting field values through chat. Returns a URL to share with the user and a token. Do NOT wait for the user here — tell them to fill it out and come back, or check later with get_form_result.",
+    schema: {
+      type: "object",
+      properties: {
+        teamSiteId: { type: "string" },
+        versionId: { type: "string" },
+        context: { type: "string", description: "The user's original generation request, for context" },
+        prefillValues: { type: "object", description: "Optional known field values to pre-fill" },
+      },
+      required: ["teamSiteId", "versionId"],
+    },
+  },
+  {
+    name: "get_form_result",
+    description: "Check whether the user has submitted the form opened via open_form_ui. Call this on a later turn (after the user confirms they submitted, or when they ask about status) — do not call it immediately after open_form_ui.",
+    schema: {
+      type: "object",
+      properties: {
+        token: { type: "string", description: "The token returned by open_form_ui" },
+      },
+      required: ["token"],
     },
   },
 ];
@@ -122,7 +151,21 @@ export async function handleToolCall(toolName: string, args: Record<string, unkn
         generatedLivedocId: String(args.generatedLivedocId!),
       });
 
-    case "get_generation_result":
+    case "download_generated_file":
+      return downloadGeneratedFile({
+        generatedLivedocId: String(args.generatedLivedocId!),
+        outputId: String(args.outputId!),
+      });
+
+    case "open_form_ui":
+      return openFormUi({
+        teamSiteId: String(args.teamSiteId!),
+        versionId: String(args.versionId!),
+        context: args.context ? String(args.context) : undefined,
+        prefillValues: (args.prefillValues as Record<string, unknown>) ?? undefined,
+      });
+
+    case "get_form_result":
       return getGenerationResult(String(args.token ?? ""));
 
     default:

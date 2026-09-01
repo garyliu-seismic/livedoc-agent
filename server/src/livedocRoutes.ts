@@ -1,5 +1,5 @@
 import express, { Express, Request, Response, NextFunction } from "express";
-import { setRuntimeToken as setMcpRuntimeToken } from "./mcp-tools.js";
+import { setRuntimeToken as setMcpRuntimeToken, setGenerationResult, getGenerationResult } from "./mcp-tools.js";
 
 const BASE_URL = process.env.SEISMIC_BASE_URL ?? "https://api.seismic.com/livedoc";
 const STATUS_NAMES = ["Queued", "Generating", "Completed", "Failed"];
@@ -171,9 +171,6 @@ function normImageUpload(raw: unknown): Rec | null {
   };
 }
 
-// In-memory result store — form posts here when generation completes, MCP reads it
-const resultStore = new Map<string, { generatedLivedocId: string; outputs: unknown[]; storedAt: number }>();
-
 export function registerRoutes(app: Express) {
   // Hot-update the Seismic API token without restarting the server.
   // Called by the MCP open_form_ui handler before returning the form URL.
@@ -185,15 +182,16 @@ export function registerRoutes(app: Express) {
     res.json({ ok: true });
   });
 
-  // Store generation result (called by form UI on completion)
+  // Store generation result (called by form UI on completion) — shared with
+  // the get_form_result MCP tool via mcp-tools.ts's in-memory store.
   app.post("/api/result/:token", (req: Request, res: Response) => {
-    resultStore.set(req.params.token, { ...req.body, storedAt: Date.now() });
+    setGenerationResult(req.params.token, req.body);
     res.json({ ok: true });
   });
 
-  // Retrieve generation result (called by MCP via get_form_result)
+  // Retrieve generation result (mirrors get_form_result MCP tool, for debugging)
   app.get("/api/result/:token", (req: Request, res: Response) => {
-    const entry = resultStore.get(req.params.token);
+    const entry = getGenerationResult(req.params.token);
     if (!entry) return res.status(404).json({ error: "Result not found — form may not have completed yet" });
     res.json(entry);
   });
