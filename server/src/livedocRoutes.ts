@@ -4,6 +4,25 @@ import { setRuntimeToken as setMcpRuntimeToken, setGenerationResult, getGenerati
 const BASE_URL = process.env.SEISMIC_BASE_URL ?? "https://api.seismic.com/livedoc";
 const STATUS_NAMES = ["Queued", "Generating", "Completed", "Failed"];
 
+// None of these route bodies had try/catch, so any thrown error (e.g. the fetch timeout
+// added to seismicFetch) became an unhandled promise rejection — Express just terminates
+// the response with an empty/truncated body instead of a proper JSON error, which the
+// client's res.json() then fails to parse ("Unexpected end of JSON input"). Wrap every
+// async handler so failures always come back as a real JSON error response.
+function asyncHandler(fn: (req: Request, res: Response, next: NextFunction) => Promise<unknown>) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    fn(req, res, next).catch((err: unknown) => {
+      console.error("🔴 Route error:", err);
+      const isTimeout = err instanceof Error && err.name === "TimeoutError";
+      const message = err instanceof Error ? err.message : String(err);
+      res.status(isTimeout ? 504 : 500).json({
+        error: isTimeout ? "Upstream Seismic API request timed out" : "Internal server error",
+        detail: message,
+      });
+    });
+  };
+}
+
 let _runtimeToken = "";
 
 function getToken(): string {
@@ -199,7 +218,7 @@ export function registerRoutes(app: Express) {
     res.json(entry);
   });
   // Search templates
-  app.post("/api/search", async (req: Request, res: Response) => {
+  app.post("/api/search", asyncHandler(async (req: Request, res: Response) => {
     const size = Math.min(req.body.page_size ?? 10, 50);
     const result = await seismicFetch("/v3/contents", {
       method: "POST",
@@ -226,10 +245,10 @@ export function registerRoutes(app: Express) {
         description: d.description,
       })),
     });
-  });
+  }));
 
   // Get template inputs
-  app.get("/api/template/:teamSiteId/:versionId", async (req: Request, res: Response) => {
+  app.get("/api/template/:teamSiteId/:versionId", asyncHandler(async (req: Request, res: Response) => {
     const { teamSiteId, versionId } = req.params;
     const result = await seismicFetch(`/v3/teamsites/${teamSiteId}/livedocVersions/${versionId}`);
     if (result.status !== 200) return res.status(result.status).json({ error: "Failed to load template", detail: result.body });
@@ -243,10 +262,10 @@ export function registerRoutes(app: Express) {
     delete body.AdhocInputs; delete body.VariableListData; delete body.Forms;
     delete body.ManualSelectContentInput; delete body.ImageUploadContentInput;
     res.json(body);
-  });
+  }));
 
   // Submit generation
-  app.post("/api/generate/:teamSiteId/:versionId", async (req: Request, res: Response) => {
+  app.post("/api/generate/:teamSiteId/:versionId", asyncHandler(async (req: Request, res: Response) => {
     const { teamSiteId, versionId } = req.params;
     const liveFormSellerId = req.query.liveFormSellerTemplateId as string | undefined;
     const qp = liveFormSellerId ? `?liveFormSellerTemplateId=${encodeURIComponent(liveFormSellerId)}` : "";
@@ -260,10 +279,10 @@ export function registerRoutes(app: Express) {
     const body = result.body as Record<string, unknown>;
     const generatedLivedocId = (body.generatedLivedocId ?? body.id ?? body.GeneratedLivedocId ?? body.Id) as string;
     res.json({ generatedLivedocId, rawBody: body });
-  });
+  }));
 
   // Poll status
-  app.get("/api/status/:generatedLivedocId", async (req: Request, res: Response) => {
+  app.get("/api/status/:generatedLivedocId", asyncHandler(async (req: Request, res: Response) => {
     const result = await seismicFetch(`/v3/generatedLivedocs/${req.params.generatedLivedocId}`);
     if (result.status !== 200) {
       const detail = typeof result.body === "string" ? result.body : JSON.stringify(result.body);
@@ -281,10 +300,10 @@ export function registerRoutes(app: Express) {
     }));
     const allDone = outputs.every(o => o.status === "Completed" || o.status === "Failed");
     res.json({ generatedLivedocId: raw.id ?? raw.Id, allDone, outputs });
-  });
+  }));
 
   // Download a generated output (proxy-stream by outputId)
-  app.get("/api/download/:outputId", async (req: Request, res: Response, _next: NextFunction) => {
+  app.get("/api/download/:outputId", asyncHandler(async (req: Request, res: Response, _next: NextFunction) => {
     // outputId here is the output's own id from status — we need the generatedLivedocId too.
     // The client passes generatedLivedocId as a query param.
     const generatedLivedocId = req.query.jobId as string | undefined;
@@ -306,15 +325,15 @@ export function registerRoutes(app: Express) {
     res.setHeader("Content-Disposition", contentDisposition);
     const buf = await fileRes.arrayBuffer();
     res.send(Buffer.from(buf));
-  });
+  }));
 
   // Image upload proxy
-  app.post("/api/image/upload", express.raw({ type: "application/octet-stream", limit: "11mb" }), async (req: Request, res: Response) => {
+  app.post("/api/image/upload", express.raw({ type: "application/octet-stream", limit: "11mb" }), asyncHandler(async (req: Request, res: Response) => {
     const result = await seismicFetch("/v3/images/upload", {
       method: "POST",
       headers: { "Content-Type": "application/octet-stream" },
       body: req.body as unknown as BodyInit,
     });
     res.status(result.status).json(result.body);
-  });
+  }));
 }
