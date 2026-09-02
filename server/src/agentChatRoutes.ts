@@ -11,7 +11,7 @@ const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "http://localhost:11434/v
 // chain-of-thought (~3s even for "say hi"); the native /api/chat endpoint honors it and
 // is ~3x faster, so tool-calling loop traffic goes there instead of through /v1.
 const OLLAMA_NATIVE_BASE_URL = OPENAI_BASE_URL.replace(/\/v1\/?$/, "");
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "qwen3:latest";
+const OPENAI_MODEL = process.env.OPENAI_MODEL || "ornith-1.5:9b";
 const MAX_TOOL_ROUNDS = 8;
 
 // ====================== MCP -> OpenAI tool schema ======================
@@ -25,6 +25,18 @@ const TOOLS_SCHEMA = TOOL_LIST.map(t => ({
     parameters: t.schema,
   },
 }));
+
+// Guard rail against the "查完模板顺手就生成" regression observed live (rule 4 alone wasn't
+// reliable enough — the model auto-chained straight into generate_live_doc with fabricated
+// data). These two tools are write/consequential, so they're simply not offered to the model
+// at all unless the user has actually expressed generate/submit intent somewhere in this
+// conversation — it can't call a tool it was never given.
+const WRITE_TOOLS = new Set(["generate_live_doc", "submit_ucb_workspace_generation"]);
+const GENERATE_INTENT_RE = /生成|提交|submit|generate/i;
+
+function hasGenerateIntent(context: any[]): boolean {
+  return context.some(m => m.role === "user" && GENERATE_INTENT_RE.test(String(m.content)));
+}
 
 const SYSTEM_PROMPT = `你是 Seismic LiveDoc 助手，通过工具帮用户搜索模板、查看表单、生成文档、查询状态、下载结果，或在字段复杂时打开网页表单让用户填写。
 
@@ -104,7 +116,8 @@ function extractField(resultText: string, ...keys: string[]): string | null {
   return null;
 }
 
-async function callLLM(messages: any[], useTools: boolean): Promise<any> {
+async function callLLM(messages: any[], useTools: boolean, allowWriteTools: boolean): Promise<any> {
+  const tools = allowWriteTools ? TOOLS_SCHEMA : TOOLS_SCHEMA.filter(t => !WRITE_TOOLS.has(t.function.name));
   const resp = await fetch(OLLAMA_NATIVE_BASE_URL + "/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -112,7 +125,7 @@ async function callLLM(messages: any[], useTools: boolean): Promise<any> {
       model: OPENAI_MODEL,
       messages,
       think: false,
-      ...(useTools ? { tools: TOOLS_SCHEMA } : {}),
+      ...(useTools ? { tools } : {}),
       stream: false,
     }),
     signal: AbortSignal.timeout(120_000),
@@ -139,11 +152,12 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
     let llmReply = "";
     let toolsUsed = false;
     let formUrl: string | null = null;
+    const allowWriteTools = hasGenerateIntent(context);
 
     try {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         const isLastRound = round === MAX_TOOL_ROUNDS - 1;
-        const choice = await withRetry(() => callLLM(buildLLMContext(context), !isLastRound), 2, 800);
+        const choice = await withRetry(() => callLLM(buildLLMContext(context), !isLastRound, allowWriteTools), 2, 800);
 
         if (!choice) {
           llmReply = "Agent 未生成有效内容。";
