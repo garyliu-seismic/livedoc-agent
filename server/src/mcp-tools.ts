@@ -95,7 +95,9 @@ export async function searchTemplates(params: {
   });
 
   if (result.status !== 200) {
-    return { results: [], totalCount: 0 };
+    // Was previously swallowed as an empty result set, which is indistinguishable from a
+    // genuine "no matches" and made auth/token failures silently look like bad search terms.
+    throw new Error(`Search failed (HTTP ${result.status}): ${JSON.stringify(result.body)}`);
   }
 
   const data = result.body as { totalCount: number; documents: Array<Record<string, any>> };
