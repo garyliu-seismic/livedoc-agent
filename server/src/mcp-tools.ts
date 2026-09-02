@@ -24,11 +24,42 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
   return { Authorization: `Bearer ${getToken()}`, ...extra };
 }
 
+// The Integration API is a sibling service used to resolve a DocCenter profile's id/versionId
+// by name. Its gateway route isn't a simple sibling path of BASE_URL — non-prod inserts an extra
+// "services/" segment (mirrors mcp-seismic-livedoc/src/config.ts's deriveIntegrationBaseUrl).
+function deriveIntegrationBaseUrl(baseUrl: string): string {
+  const url = new URL(baseUrl);
+  const nonProdMatch = url.pathname.match(/^\/(dev|qa|uat)\/livedoc\/?$/);
+  if (nonProdMatch) return `${url.origin}/${nonProdMatch[1]}/services/integration`;
+  return `${url.origin}/integration`;
+}
+
+const INTEGRATION_BASE_URL = process.env.SEISMIC_INTEGRATION_BASE_URL ?? deriveIntegrationBaseUrl(BASE_URL);
+
+// LDS's APIs never return a browsable URL for a committed Workspace file, so it's built
+// client-side from fileId + the JWT's tenant_fqdn claim. viewType is not format-dependent —
+// "DraftPresentations" is the one value confirmed to work end-to-end, treated as a default.
+function jwtTenantFqdn(token: string): string | null {
+  try {
+    const payload = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString());
+    return typeof payload.tenant_fqdn === "string" ? payload.tenant_fqdn : null;
+  } catch {
+    return null;
+  }
+}
+
+function buildWorkspaceUrl(fileId: string): string | null {
+  const tenantFqdn = jwtTenantFqdn(getToken());
+  if (!tenantFqdn) return null;
+  return `https://${tenantFqdn}/apps/workspace/doc/${fileId}//grid/title?viewType=DraftPresentations`;
+}
+
 async function seismicFetch(
   path: string,
-  options: { method?: string; headers?: Record<string, string>; body?: BodyInit } = {}
+  options: { method?: string; headers?: Record<string, string>; body?: BodyInit } = {},
+  base: string = BASE_URL
 ): Promise<{ status: number; body: unknown }> {
-  const url = `${BASE_URL}${path}`;
+  const url = `${base}${path}`;
   const res = await fetch(url, {
     method: options.method ?? "GET",
     body: options.body,
@@ -286,4 +317,195 @@ export async function downloadGeneratedFile(params: { generatedLivedocId: string
   }
 
   return { url: fileUrl, contentType: "application/octet-stream" };
+}
+
+// ================================================================
+// UCB -> Workspace: generate a LiveDoc directly into a Workspace folder
+// (as opposed to a downloadable file), then auto-commit + return a real
+// browsable workspaceUrl. Mirrors mcp-seismic-livedoc's ucb-workspace tools.
+// ================================================================
+
+export async function findDocCenterProfile(params: { profileName: string; teamSiteId?: string }): Promise<Record<string, unknown>> {
+  const result = await seismicFetch("/v2/users/profiles", {}, INTEGRATION_BASE_URL);
+  if (result.status === 401 || result.status === 403) {
+    return {
+      error: "profile_lookup_unauthorized",
+      message: `The Integration API rejected the request (HTTP ${result.status}) — the current token likely lacks the ` +
+        "seismic.self.view/seismic.self.manage scope required to list assigned profiles. A manually-set SEISMIC_API_TOKEN " +
+        "usually won't have this scope. Fall back to reading contentProfiles/profileVersionIds directly off search_templates results.",
+    };
+  }
+  if (result.status !== 200) {
+    return { error: `Listing profiles failed (HTTP ${result.status})`, detail: result.body };
+  }
+
+  const profiles = (result.body as Array<Record<string, unknown>>) ?? [];
+  const nameLower = params.profileName.trim().toLowerCase();
+  const matches = profiles.filter(p => {
+    const name = String(p.name ?? p.Name ?? "").toLowerCase();
+    const teamSiteOk = !params.teamSiteId || String(p.teamSiteId ?? p.TeamSiteId ?? "") === params.teamSiteId;
+    return teamSiteOk && name.includes(nameLower);
+  });
+
+  return { matches };
+}
+
+export async function listWorkspaceSpaces(): Promise<unknown> {
+  const result = await seismicFetch("/v3/workspace/destinations/spaces");
+  if (result.status !== 200) {
+    return { error: `Listing Workspace spaces failed (HTTP ${result.status})`, detail: result.body };
+  }
+  return result.body;
+}
+
+export async function listWorkspaceFolders(params: {
+  spaceId: string;
+  folderId?: string;
+  offset?: number;
+  limit?: number;
+}): Promise<unknown> {
+  const offset = params.offset ?? 0;
+  const limit = params.limit ?? 100;
+  const path = params.folderId
+    ? `/v3/workspace/destinations/spaces/${encodeURIComponent(params.spaceId)}/folders/${encodeURIComponent(params.folderId)}/items?offset=${offset}&limit=${limit}`
+    : `/v3/workspace/destinations/spaces/${encodeURIComponent(params.spaceId)}/roots`;
+  const result = await seismicFetch(path);
+  if (result.status !== 200) {
+    return { error: `Listing Workspace folder contents failed (HTTP ${result.status})`, detail: result.body };
+  }
+  return result.body;
+}
+
+interface PendingCommit {
+  spaceId: string;
+  fileId: string;
+  fileVersionId: string;
+  instanceId: string;
+  stageId: string;
+  stageRecordId: string;
+  committed: boolean;
+}
+
+const _pendingCommits = new Map<string, PendingCommit>();
+
+export async function submitUcbWorkspaceGeneration(params: {
+  teamSiteId: string;
+  libraryContentVersionId: string;
+  adHocInputs: Array<{ name: string; value: unknown }>;
+  outputs: Array<{ format: string; name?: string; fileName?: string }>;
+  variableListData?: Array<{ variableListName: string; variableInputs: Array<{ name: string; value: unknown }> }>;
+  regionalFormat?: string;
+  workspace: { spaceId: string; folderId: string; name: string; format: string };
+  origin: { profileId: string; profileVersionId: string; contentLocation: string };
+}): Promise<Record<string, unknown>> {
+  if (params.outputs.length !== 1) {
+    return { error: "Exactly one output is required for a UCB Workspace generation.", detail: `Got ${params.outputs.length} outputs.` };
+  }
+
+  const generationInput: Record<string, unknown> = {
+    adHocInputs: params.adHocInputs,
+    outputs: params.outputs,
+  };
+  if (params.variableListData) generationInput.variableListData = params.variableListData;
+  if (params.regionalFormat) generationInput.regionalFormat = params.regionalFormat;
+
+  const result = await seismicFetch(
+    `/v3/teamsites/${params.teamSiteId}/livedocVersions/${params.libraryContentVersionId}/ucb-workspace-generations`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        generationInput,
+        workspace: params.workspace,
+        origin: params.origin,
+      }),
+    }
+  );
+  if (result.status !== 200 && result.status !== 201) {
+    return { error: `UCB Workspace generation submission failed (HTTP ${result.status})`, detail: result.body };
+  }
+
+  const body = result.body as Record<string, unknown>;
+  const generationId = String(body.id ?? body.Id ?? "");
+  const lifecycle = (body.lifecycle ?? body.Lifecycle ?? {}) as Record<string, unknown>;
+  const workspace = (body.workspace ?? body.Workspace ?? {}) as Record<string, unknown>;
+
+  const instanceId = String(lifecycle.instanceId ?? lifecycle.InstanceId ?? "");
+  const stageId = String(lifecycle.stageId ?? lifecycle.StageId ?? "");
+  const stageRecordId = String(lifecycle.stageRecordId ?? lifecycle.StageRecordId ?? "");
+  const fileId = String(workspace.fileId ?? workspace.FileId ?? "");
+  const fileVersionId = String(workspace.fileVersionId ?? workspace.FileVersionId ?? "");
+
+  if (generationId && instanceId && stageId && stageRecordId && fileId && fileVersionId) {
+    _pendingCommits.set(generationId, {
+      spaceId: params.workspace.spaceId,
+      fileId,
+      fileVersionId,
+      instanceId,
+      stageId,
+      stageRecordId,
+      committed: false,
+    });
+  }
+
+  return {
+    generationId,
+    workspaceFileName: params.workspace.name,
+    message: "UCB Workspace generation submitted. Call get_ucb_workspace_generation_status to poll for completion.",
+  };
+}
+
+async function commitToWorkspace(pending: PendingCommit): Promise<{ committed: true } | { error: string; detail?: unknown }> {
+  const result = await seismicFetch(
+    `/v3/workspace/spaces/${encodeURIComponent(pending.spaceId)}/files/${encodeURIComponent(pending.fileId)}/versions/${encodeURIComponent(pending.fileVersionId)}/livedoc/instance`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: pending.instanceId,
+        stage: { id: pending.stageId, recordId: pending.stageRecordId },
+        useCustomName: false,
+      }),
+    }
+  );
+  if (result.status !== 200 && result.status !== 202 && result.status !== 204) {
+    return { error: `Committing the generated file to Workspace failed (HTTP ${result.status})`, detail: result.body };
+  }
+  pending.committed = true;
+  return { committed: true };
+}
+
+export async function getUcbWorkspaceGenerationStatus(params: { generationId: string }): Promise<Record<string, unknown>> {
+  const result = await seismicFetch(`/v3/ucb-workspace-generations/${params.generationId}/status`);
+  if (result.status !== 200) {
+    return { error: `Status check failed (HTTP ${result.status})`, detail: result.body };
+  }
+  const raw = result.body as Record<string, unknown>;
+  const status = String(raw.status ?? raw.Status ?? "");
+
+  const response: Record<string, unknown> = {
+    generationId: String(raw.id ?? raw.Id ?? params.generationId),
+    status,
+    workspaceCommitted: false,
+  };
+
+  if (status !== "Ready") return response;
+
+  const pending = _pendingCommits.get(params.generationId);
+  if (!pending) {
+    return {
+      ...response,
+      error: "Generation is Ready, but the Workspace commit context for this generationId was lost " +
+        "(likely a server restart mid-flow). The generation must be resubmitted via submit_ucb_workspace_generation.",
+    };
+  }
+  if (pending.committed) {
+    return { ...response, workspaceCommitted: true, workspaceUrl: buildWorkspaceUrl(pending.fileId) };
+  }
+
+  const commitResult = await commitToWorkspace(pending);
+  if ("error" in commitResult) {
+    return { ...response, workspaceCommitted: false, commitError: commitResult.error, commitErrorDetail: commitResult.detail };
+  }
+  return { ...response, workspaceCommitted: true, workspaceUrl: buildWorkspaceUrl(pending.fileId) };
 }

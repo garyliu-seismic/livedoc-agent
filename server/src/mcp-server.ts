@@ -26,6 +26,11 @@ import {
   getGenerationResult,
   downloadGeneratedFile,
   openFormUi,
+  findDocCenterProfile,
+  listWorkspaceSpaces,
+  listWorkspaceFolders,
+  submitUcbWorkspaceGeneration,
+  getUcbWorkspaceGenerationStatus,
 } from "./mcp-tools.js";
 
 // ================================================================
@@ -118,6 +123,83 @@ export const TOOL_LIST: MCPTool[] = [
       required: ["token"],
     },
   },
+  {
+    name: "find_doccenter_profile",
+    description: "Resolve a DocCenter profile's profileId/profileVersionId by name, for submit_ucb_workspace_generation's origin fields. Requires elevated token scope and may fail with profile_lookup_unauthorized on a plain API token — if it does, ask the user for profileId/profileVersionId directly or check whether search_templates already returned contentProfiles on the matching result.",
+    schema: {
+      type: "object",
+      properties: {
+        profileName: { type: "string", description: "Exact or partial DocCenter profile name" },
+        teamSiteId: { type: "string", description: "Optional, to disambiguate when multiple teamsites have a profile with this name" },
+      },
+      required: ["profileName"],
+    },
+  },
+  {
+    name: "list_workspace_spaces",
+    description: "List the Seismic Workspace spaces the current user can see. Call first when the user wants to generate a LiveDoc into Workspace, to get a spaceId.",
+    schema: { type: "object", properties: {} },
+  },
+  {
+    name: "list_workspace_folders",
+    description: "List folders/files under a Workspace space. Omit folderId to list the space's root folders.",
+    schema: {
+      type: "object",
+      properties: {
+        spaceId: { type: "string", description: "Workspace space id, from list_workspace_spaces" },
+        folderId: { type: "string", description: "Folder id to drill into. Omit to list root folders." },
+        offset: { type: "integer" },
+        limit: { type: "integer" },
+      },
+      required: ["spaceId"],
+    },
+  },
+  {
+    name: "submit_ucb_workspace_generation",
+    description: "Submit a LiveDoc generation whose output is written directly into a Seismic Workspace folder as a linked file, instead of being downloaded. Requires exactly one output format. Never guess origin.profileId/profileVersionId/contentLocation — use search results, find_doccenter_profile, or ask the user. Returns a generationId — call get_ucb_workspace_generation_status to poll; Workspace commit happens automatically once Ready.",
+    schema: {
+      type: "object",
+      properties: {
+        teamSiteId: { type: "string" },
+        libraryContentVersionId: { type: "string" },
+        adHocInputs: { type: "array", items: { type: "object", properties: { name: { type: "string" }, value: {} } }, description: "Array of {name, value} pairs for ALL ad hoc inputs" },
+        outputs: { type: "array", items: { type: "object", properties: { format: { type: "string" }, name: { type: "string" }, fileName: { type: "string" } } }, description: "Exactly one output format" },
+        variableListData: { type: "array", items: { type: "object" }, description: "Optional variable list data" },
+        regionalFormat: { type: "string" },
+        workspace: {
+          type: "object",
+          properties: {
+            spaceId: { type: "string", description: "From list_workspace_spaces" },
+            folderId: { type: "string", description: "From list_workspace_folders" },
+            name: { type: "string", description: "Name for the generated Workspace file (no extension needed)" },
+            format: { type: "string", description: "Must match outputs[0].format" },
+          },
+          required: ["spaceId", "folderId", "name", "format"],
+        },
+        origin: {
+          type: "object",
+          properties: {
+            profileId: { type: "string" },
+            profileVersionId: { type: "string" },
+            contentLocation: { type: "string", description: "No lookup available — must be supplied by the caller" },
+          },
+          required: ["profileId", "profileVersionId", "contentLocation"],
+        },
+      },
+      required: ["teamSiteId", "libraryContentVersionId", "adHocInputs", "outputs", "workspace", "origin"],
+    },
+  },
+  {
+    name: "get_ucb_workspace_generation_status",
+    description: "Check the status of a UCB Workspace generation job. Once status is Ready, this automatically commits the generated file into Workspace and returns workspaceUrl — no separate commit tool needed. NEVER construct workspaceUrl yourself; only relay it verbatim once this tool returns it.",
+    schema: {
+      type: "object",
+      properties: {
+        generationId: { type: "string", description: "Returned by submit_ucb_workspace_generation" },
+      },
+      required: ["generationId"],
+    },
+  },
 ];
 
 // ================================================================
@@ -167,6 +249,31 @@ export async function handleToolCall(toolName: string, args: Record<string, unkn
 
     case "get_form_result":
       return getGenerationResult(String(args.token ?? ""));
+
+    case "find_doccenter_profile":
+      return findDocCenterProfile({
+        profileName: String(args.profileName!),
+        teamSiteId: args.teamSiteId ? String(args.teamSiteId) : undefined,
+      });
+
+    case "list_workspace_spaces":
+      return listWorkspaceSpaces();
+
+    case "list_workspace_folders":
+      return listWorkspaceFolders({
+        spaceId: String(args.spaceId!),
+        folderId: args.folderId ? String(args.folderId) : undefined,
+        offset: args.offset !== undefined ? Number(args.offset) : undefined,
+        limit: args.limit !== undefined ? Number(args.limit) : undefined,
+      });
+
+    case "submit_ucb_workspace_generation":
+      return submitUcbWorkspaceGeneration(
+        args as unknown as Parameters<typeof submitUcbWorkspaceGeneration>[0]
+      );
+
+    case "get_ucb_workspace_generation_status":
+      return getUcbWorkspaceGenerationStatus({ generationId: String(args.generationId!) });
 
     default:
       throw new Error(`Unknown MCP tool: ${toolName}`);
