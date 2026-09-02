@@ -52,6 +52,22 @@ function buildLLMContext(context: any[]): any[] {
   return combined.map(({ pinned, ...rest }: any) => rest);
 }
 
+// Last-resort safety net: prompt rules alone aren't reliable against a small local model
+// (verified live — it fabricated a download URL pointing at our own frontend port with a
+// copy-pasted id despite explicit "never construct a URL" rules). Strip any URL in the
+// final reply that doesn't verbatim appear somewhere in this conversation's real tool
+// results, rather than trust the model to have followed instructions.
+function stripFabricatedUrls(reply: string, context: any[]): string {
+  const knownText = context
+    .filter(m => m.role === "tool" || m.pinned)
+    .map(m => String(m.content))
+    .join("\n");
+
+  return reply.replace(/https?:\/\/[^\s"')\]]+/g, url => {
+    return knownText.includes(url) ? url : "[链接已被移除：该地址未在任何工具的真实返回结果中出现，可能是模型编造的。请重新询问以获取真实链接。]";
+  });
+}
+
 function extractField(resultText: string, ...keys: string[]): string | null {
   try {
     const parsed = JSON.parse(resultText);
@@ -188,6 +204,8 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
       console.error("🔴 Qwen3 Ollama Error:", e);
       llmReply = `❌ AI Agent (${OPENAI_MODEL}) 响应失败。请确保 Ollama 正在运行且模型已加载。\n\n错误详情：${(e as Error).message}`;
     }
+
+    llmReply = stripFabricatedUrls(llmReply, context);
 
     (req.app as any).locals.conversations[sessionId] = context;
 
