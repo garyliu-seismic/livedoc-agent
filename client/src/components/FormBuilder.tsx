@@ -347,7 +347,7 @@ export default function FormBuilder({ template, state, onChange }: Props) {
                   transition: "background 0.15s",
                 }}
               >
-                {form.name || form.outputs.map(o => o.format).join(" + ")}
+                {form.outputs.map(o => o.format.toUpperCase()).join(" + ")}
               </button>
             );
           })}
