@@ -115,6 +115,7 @@ async function callLLM(messages: any[], useTools: boolean): Promise<any> {
       ...(useTools ? { tools: TOOLS_SCHEMA } : {}),
       stream: false,
     }),
+    signal: AbortSignal.timeout(120_000),
   });
   if (!resp.ok) throw new Error(`Ollama API returned ${resp.status}`);
   const data = await resp.json();

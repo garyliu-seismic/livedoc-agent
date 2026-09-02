@@ -14,6 +14,8 @@ function authHeaders(extra: Record<string, string> = {}): Record<string, string>
   return { Authorization: `Bearer ${getToken()}`, ...extra };
 }
 
+const SEISMIC_FETCH_TIMEOUT_MS = 30_000;
+
 async function seismicFetch(
   path: string,
   options: { method?: string; headers?: Record<string, string>; body?: BodyInit } = {}
@@ -23,6 +25,7 @@ async function seismicFetch(
     method: options.method,
     body: options.body,
     headers: { ...authHeaders(), ...(options.headers ?? {}) },
+    signal: AbortSignal.timeout(SEISMIC_FETCH_TIMEOUT_MS),
   });
   const text = await res.text();
   let body: unknown;

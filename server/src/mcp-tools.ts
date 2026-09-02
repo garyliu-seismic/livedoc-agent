@@ -54,16 +54,22 @@ function buildWorkspaceUrl(fileId: string): string | null {
   return `https://${tenantFqdn}/apps/workspace/doc/${fileId}//grid/title?viewType=DraftPresentations`;
 }
 
+const SEISMIC_FETCH_TIMEOUT_MS = 30_000;
+
 async function seismicFetch(
   path: string,
   options: { method?: string; headers?: Record<string, string>; body?: BodyInit } = {},
   base: string = BASE_URL
 ): Promise<{ status: number; body: unknown }> {
   const url = `${base}${path}`;
+  // Without this, a hung upstream request blocks the whole tool call indefinitely — observed
+  // live: a submit_ucb_workspace_generation call hung until the client's own 5-minute abort
+  // killed it, with zero diagnostic info about where time was actually being spent.
   const res = await fetch(url, {
     method: options.method ?? "GET",
     body: options.body,
     headers: { ...authHeaders(), ...(options.headers ?? {}) },
+    signal: AbortSignal.timeout(SEISMIC_FETCH_TIMEOUT_MS),
   });
   const text = await res.text();
   let body: unknown;
