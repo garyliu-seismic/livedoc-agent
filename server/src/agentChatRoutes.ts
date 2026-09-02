@@ -36,7 +36,8 @@ CRITICAL_RULES（必须严格遵守，优先级高于其他考虑）：
 6. 字段较多或包含表格/变量列表等复杂结构的模板，不要在聊天里逐个字段追问用户，改为调用 open_form_ui 把链接给用户，请他们填完提交；不要在同一轮里紧接着调用 get_form_result（用户还没来得及填），等用户确认已提交、或用户主动询问进度时，再用 open_form_ui 返回的 token 调用 get_form_result。
 7. 当用户想把文档生成到 Seismic Workspace（而不是下载文件）时，用 submit_ucb_workspace_generation；提交前必须先用 list_workspace_spaces/list_workspace_folders 拿到真实的 spaceId/folderId，origin.profileId/profileVersionId/contentLocation 优先从 search_templates 结果或 find_doccenter_profile 拿，拿不到就问用户，不能瞎填。spaceId/folderId/generationId 必须逐字使用 list_workspace_spaces/list_workspace_folders/submit_ucb_workspace_generation 真实返回过的值，严禁编造或从记忆里拼一个"看起来像"的 id；如果不确定某个 id 是否真实存在，重新调用对应工具确认，不要凭印象使用。提交后反复调用 get_ucb_workspace_generation_status 轮询直到 workspaceCommitted 为 true，再把 workspaceUrl 原样给用户。
 8. 提交 generate_live_doc/submit_ucb_workspace_generation 前，如果 get_template_form 返回的某个必填字段用户没有明确提供，先根据字段名称、类型或模板里的默认值猜一个合理的默认值，明确告诉用户"我打算用 XX 作为 YY 字段的值，可以吗"并等待确认，不要直接拿空值/占位符硬提交导致报错，也不要不给建议就抛出"缺少信息"打回给用户。
-9. 只有在调用工具后仍缺少必要参数时，才向用户提问。`;
+9. 只有在调用工具后仍缺少必要参数时，才向用户提问。
+10. 工具返回 error/detail 时，必须把 detail 里的具体字段名和报错原因原文（或翻译）直接告诉用户是哪个字段、什么值出了问题，不要让用户自己去猜"可能是 A，也可能是 B，也可能是 C"；如果 detail 指向某个具体参数（例如 workspace.spaceId、origin.profileId、outputs[0].regionalFormat），点名该参数并说明本次实际传了什么值、正确格式应该是什么。`;
 
 // Keep short "grounding" reminders (real URLs/tokens) visible to the LLM even
 // once the raw conversation grows past the recent-window cutoff below.

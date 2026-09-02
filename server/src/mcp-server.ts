@@ -165,7 +165,7 @@ export const TOOL_LIST: MCPTool[] = [
         adHocInputs: { type: "array", items: { type: "object", properties: { name: { type: "string" }, value: {} } }, description: "Array of {name, value} pairs for ALL ad hoc inputs" },
         outputs: { type: "array", items: { type: "object", properties: { format: { type: "string" }, name: { type: "string" }, fileName: { type: "string" } } }, description: "Exactly one output format" },
         variableListData: { type: "array", items: { type: "object" }, description: "Optional variable list data" },
-        regionalFormat: { type: "string" },
+        regionalFormat: { type: "string", description: "Optional locale/culture code for number, date, and currency formatting, e.g. \"en-US\" or \"fr-FR\" — NOT a file format like PDF/PPTX. Omit entirely unless the user specifically asked for a non-default regional format." },
         workspace: {
           type: "object",
           properties: {
