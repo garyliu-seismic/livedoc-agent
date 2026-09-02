@@ -341,13 +341,32 @@ export async function findDocCenterProfile(params: { profileName: string; teamSi
 
   const profiles = (result.body as Array<Record<string, unknown>>) ?? [];
   const nameLower = params.profileName.trim().toLowerCase();
-  const matches = profiles.filter(p => {
-    const name = String(p.name ?? p.Name ?? "").toLowerCase();
-    const teamSiteOk = !params.teamSiteId || String(p.teamSiteId ?? p.TeamSiteId ?? "") === params.teamSiteId;
-    return teamSiteOk && name.includes(nameLower);
+
+  const toResult = (p: Record<string, unknown>) => ({
+    profileId: pick(p, "id", "Id"),
+    // The raw API field is versionId/VersionId — the caller needs it as profileVersionId
+    // for submit_ucb_workspace_generation's origin, so rename it here rather than passing
+    // the raw shape through (which silently omitted a usable profileVersionId key).
+    profileVersionId: pick(p, "versionId", "VersionId"),
+    name: pick(p, "name", "Name"),
+    teamSiteId: pick(p, "teamSiteId", "TeamSiteId"),
+    isDefault: pick(p, "isDefault", "IsDefault"),
+    isPublished: pick(p, "isPublished", "IsPublished"),
   });
 
-  return { matches };
+  let matches = profiles.filter(p => String(pick(p, "name", "Name") ?? "").toLowerCase() === nameLower);
+  if (params.teamSiteId) {
+    matches = matches.filter(p => String(pick(p, "teamSiteId", "TeamSiteId") ?? "") === params.teamSiteId);
+  }
+  if (matches.length > 0) {
+    return { totalCount: matches.length, matches: matches.map(toResult) };
+  }
+
+  // No exact match — surface partial-name matches so the caller can disambiguate instead of guessing.
+  const suggestions = profiles
+    .filter(p => String(pick(p, "name", "Name") ?? "").toLowerCase().includes(nameLower))
+    .map(toResult);
+  return { totalCount: 0, matches: [], suggestions };
 }
 
 export async function listWorkspaceSpaces(): Promise<unknown> {
