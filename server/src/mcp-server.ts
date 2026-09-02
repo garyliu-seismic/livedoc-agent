@@ -100,7 +100,7 @@ export const TOOL_LIST: MCPTool[] = [
   },
   {
     name: "open_form_ui",
-    description: "For templates with many or complex fields, open the real form page in the user's browser instead of collecting field values through chat. Returns a URL to share with the user and a token. Do NOT wait for the user here — tell them to fill it out and come back, or check later with get_form_result.",
+    description: "For templates with many or complex fields, open the real form page in the user's browser instead of collecting field values through chat. Returns a URL to share with the user and a token. Do NOT wait for the user here — tell them to fill it out and come back, or check later with get_form_result. If the user asked to save/generate to Seismic Workspace (or mentioned UCB), pass workspace and origin so the form submits there instead of the default download flow — get spaceId/folderId from list_workspace_spaces/list_workspace_folders and profileId/profileVersionId/contentLocation from search results or find_doccenter_profile first, never guess them. Omit both entirely for the default download flow.",
     schema: {
       type: "object",
       properties: {
@@ -108,6 +108,26 @@ export const TOOL_LIST: MCPTool[] = [
         versionId: { type: "string" },
         context: { type: "string", description: "The user's original generation request, for context" },
         prefillValues: { type: "object", description: "Optional known field values to pre-fill" },
+        workspace: {
+          type: "object",
+          description: "Only include when the user wants to save/generate to Seismic Workspace",
+          properties: {
+            spaceId: { type: "string", description: "From list_workspace_spaces" },
+            folderId: { type: "string", description: "From list_workspace_folders" },
+            name: { type: "string", description: "Optional name for the generated Workspace file; defaults to the template name if omitted" },
+          },
+          required: ["spaceId", "folderId"],
+        },
+        origin: {
+          type: "object",
+          description: "Required alongside workspace — DocCenter origin metadata for the Workspace generation",
+          properties: {
+            profileId: { type: "string" },
+            profileVersionId: { type: "string" },
+            contentLocation: { type: "string", description: "No lookup available — must be supplied by the caller" },
+          },
+          required: ["profileId", "profileVersionId", "contentLocation"],
+        },
       },
       required: ["teamSiteId", "versionId"],
     },
@@ -245,6 +265,8 @@ export async function handleToolCall(toolName: string, args: Record<string, unkn
         versionId: String(args.versionId!),
         context: args.context ? String(args.context) : undefined,
         prefillValues: (args.prefillValues as Record<string, unknown>) ?? undefined,
+        workspace: (args.workspace as { spaceId: string; folderId: string; name?: string }) ?? undefined,
+        origin: (args.origin as { profileId: string; profileVersionId: string; contentLocation: string }) ?? undefined,
       });
 
     case "get_form_result":

@@ -296,6 +296,11 @@ export function openFormUi(params: {
   versionId: string;
   context?: string;
   prefillValues?: Record<string, unknown>;
+  // When present, the form page submits via the UCB Workspace generation endpoint instead
+  // of the default download flow. Only pass these when the user actually asked to save to
+  // Workspace/UCB — otherwise the form defaults to the normal generate-and-download path.
+  workspace?: { spaceId: string; folderId: string; name?: string };
+  origin?: { profileId: string; profileVersionId: string; contentLocation: string };
 }): { url: string; token: string } {
   const token = crypto.randomUUID();
 
@@ -306,6 +311,8 @@ export function openFormUi(params: {
   });
   if (params.context) query.set("context", Buffer.from(params.context, "utf-8").toString("base64"));
   if (params.prefillValues) query.set("prefill", Buffer.from(JSON.stringify(params.prefillValues), "utf-8").toString("base64"));
+  if (params.workspace) query.set("workspace", Buffer.from(JSON.stringify(params.workspace), "utf-8").toString("base64"));
+  if (params.origin) query.set("origin", Buffer.from(JSON.stringify(params.origin), "utf-8").toString("base64"));
 
   return { url: `${CLIENT_BASE_URL}/fill?${query.toString()}`, token };
 }

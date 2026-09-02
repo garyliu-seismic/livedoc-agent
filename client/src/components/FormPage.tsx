@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { useSearchParams, useNavigate } from "react-router-dom";
-import { LiveDocVersionResp, GenerationStatus } from "../types";
+import { LiveDocVersionResp, GenerationStatus, UcbGenerationStatusResp, UcbWorkspaceConfig, UcbOriginConfig } from "../types";
 import FormBuilder, { initFormState, buildGenerateRequest } from "./FormBuilder";
 import GenerationStatusPanel from "./GenerationStatus";
+import UcbGenerationStatusPanel from "./UcbGenerationStatus";
 import DownloadPanel from "./DownloadPanel";
 
 type Phase = "loading" | "form" | "generating" | "done" | "error";
@@ -24,6 +25,19 @@ export default function FormPage() {
   const contextB64 = params.get("context") ?? "";
   const resultToken = params.get("token") ?? "";
   const prefillB64 = params.get("prefill") ?? "";
+  const workspaceB64 = params.get("workspace") ?? "";
+  const originB64 = params.get("origin") ?? "";
+
+  // Present only when open_form_ui was called with workspace/origin context — routes
+  // submission through the UCB Workspace generation endpoint instead of the default
+  // download flow.
+  const ucbWorkspace: UcbWorkspaceConfig | null = workspaceB64
+    ? (() => { try { return JSON.parse(atob(workspaceB64)); } catch { return null; } })()
+    : null;
+  const ucbOrigin: UcbOriginConfig | null = originB64
+    ? (() => { try { return JSON.parse(atob(originB64)); } catch { return null; } })()
+    : null;
+  const isUcbMode = !!(ucbWorkspace && ucbOrigin);
 
   const [phase, setPhase] = useState<Phase>("loading");
   const [template, setTemplate] = useState<LiveDocVersionResp | null>(null);
@@ -32,6 +46,7 @@ export default function FormPage() {
   const [submitting, setSubmitting] = useState(false);
   const [generatedId, setGeneratedId] = useState<string | null>(null);
   const [doneStatus, setDoneStatus] = useState<GenerationStatus | null>(null);
+  const [ucbDoneStatus, setUcbDoneStatus] = useState<UcbGenerationStatusResp | null>(null);
 
   // When generation completes: POST result back to Express so MCP can read it, then auto-close
   useEffect(() => {
@@ -49,7 +64,18 @@ export default function FormPage() {
         return () => clearTimeout(t);
       }
     }
-  }, [phase, doneStatus]);
+    if (phase === "done" && ucbDoneStatus) {
+      if (resultToken) {
+        fetch(`/api/result/${resultToken}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ generationId: ucbDoneStatus.generationId, workspaceUrl: ucbDoneStatus.workspaceUrl }),
+        }).catch(() => {});
+      }
+      const t = setTimeout(() => window.close(), 2000);
+      return () => clearTimeout(t);
+    }
+  }, [phase, doneStatus, ucbDoneStatus]);
 
   useEffect(() => {
     if (!teamSiteId || !versionId) {
@@ -91,19 +117,41 @@ export default function FormPage() {
     setErrorMsg(null);
     try {
       const payload = buildGenerateRequest(template, formState);
-      const res = await fetch(`/api/generate/${teamSiteId}/${versionId}`, {
+      // UCB requires exactly one output — take the first selected format.
+      const endpoint = isUcbMode ? `/api/ucb-generate/${teamSiteId}/${versionId}` : `/api/generate/${teamSiteId}/${versionId}`;
+      const body = isUcbMode
+        ? {
+            adHocInputs: payload.adHocInputs,
+            variableListData: payload.variableListData,
+            workspace: {
+              spaceId: ucbWorkspace!.spaceId,
+              folderId: ucbWorkspace!.folderId,
+              name: ucbWorkspace!.name || template.name || "LiveDoc",
+              format: payload.outputs[0].format,
+            },
+            origin: ucbOrigin,
+          }
+        : payload;
+
+      const res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (!res.ok) {
         const detail = data.detail ? (typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail)) : "";
         throw new Error(`${data.error ?? `HTTP ${res.status}`}${detail ? `: ${detail}` : ""}`);
       }
-      const id = data.generatedLivedocId ?? data.id;
-      if (!id) throw new Error("No generatedLivedocId in response");
-      setGeneratedId(id);
+
+      if (isUcbMode) {
+        if (!data.generationId) throw new Error("No generationId in response");
+        setGeneratedId(data.generationId);
+      } else {
+        const id = data.generatedLivedocId ?? data.id;
+        if (!id) throw new Error("No generatedLivedocId in response");
+        setGeneratedId(id);
+      }
       setPhase("generating");
     } catch (e: unknown) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
@@ -138,11 +186,19 @@ export default function FormPage() {
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
           <div className="section-title" style={{ margin: 0 }}>Generating Document</div>
         </div>
-        <GenerationStatusPanel
-          generatedLivedocId={generatedId}
-          onDone={s => { setDoneStatus(s); setPhase("done"); }}
-          onError={msg => { setErrorMsg(msg); setPhase("error"); }}
-        />
+        {isUcbMode ? (
+          <UcbGenerationStatusPanel
+            generationId={generatedId}
+            onDone={s => { setUcbDoneStatus(s); setPhase("done"); }}
+            onError={msg => { setErrorMsg(msg); setPhase("error"); }}
+          />
+        ) : (
+          <GenerationStatusPanel
+            generatedLivedocId={generatedId}
+            onDone={s => { setDoneStatus(s); setPhase("done"); }}
+            onError={msg => { setErrorMsg(msg); setPhase("error"); }}
+          />
+        )}
       </div>
     );
   }
@@ -174,6 +230,32 @@ export default function FormPage() {
     );
   }
 
+  if (phase === "done" && ucbDoneStatus) {
+    return (
+      <div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
+          <div className="section-title" style={{ margin: 0 }}>✓ Saved to Workspace</div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <button className="btn btn-primary" onClick={() => window.close()} style={{ fontSize: 13 }}>
+              Close &amp; Return to Claude
+            </button>
+            <button className="btn btn-secondary" onClick={() => { setPhase("form"); setGeneratedId(null); setUcbDoneStatus(null); }}>Generate Again</button>
+          </div>
+        </div>
+        <div style={{ background: "#f0faf0", border: "1px solid #b2dfb2", borderRadius: 8, padding: "10px 16px", marginBottom: 16, fontSize: 14, color: "#2e7d32" }}>
+          Document generated and committed to Workspace! Closing this tab automatically… or click "Close &amp; Return to Claude" above.
+        </div>
+        {ucbDoneStatus.workspaceUrl && (
+          <div className="card">
+            <a href={ucbDoneStatus.workspaceUrl} target="_blank" rel="noopener noreferrer" className="btn btn-primary" style={{ display: "inline-flex" }}>
+              Open in Workspace →
+            </a>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
@@ -189,6 +271,12 @@ export default function FormPage() {
       </div>
 
       {errorMsg && <div className="error-box" style={{ marginBottom: 16 }}>{errorMsg}</div>}
+
+      {isUcbMode && (
+        <div style={{ background: "#e8f0fe", border: "1px solid #b3d1fb", borderRadius: 8, padding: "10px 16px", marginBottom: 16, fontSize: 13, color: "#0066cc" }}>
+          This will save directly to Seismic Workspace (space: {ucbWorkspace!.spaceId}, folder: {ucbWorkspace!.folderId}) instead of downloading. Only the first selected output format will be used.
+        </div>
+      )}
 
       <div className="card" style={{ marginBottom: 24 }}>
         {template && formState && (
@@ -207,7 +295,7 @@ export default function FormPage() {
           disabled={submitting || !formState?.selectedOutputs.length}
           style={{ padding: "10px 28px", fontSize: 15 }}
         >
-          {submitting ? <><span className="spinner" /> Submitting…</> : "Generate Document →"}
+          {submitting ? <><span className="spinner" /> Submitting…</> : (isUcbMode ? "Generate to Workspace →" : "Generate Document →")}
         </button>
       </div>
     </div>

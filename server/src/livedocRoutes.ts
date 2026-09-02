@@ -1,5 +1,11 @@
 import express, { Express, Request, Response, NextFunction } from "express";
-import { setRuntimeToken as setMcpRuntimeToken, setGenerationResult, getGenerationResult } from "./mcp-tools.js";
+import {
+  setRuntimeToken as setMcpRuntimeToken,
+  setGenerationResult,
+  getGenerationResult,
+  submitUcbWorkspaceGeneration,
+  getUcbWorkspaceGenerationStatus,
+} from "./mcp-tools.js";
 
 const BASE_URL = process.env.SEISMIC_BASE_URL ?? "https://api.seismic.com/livedoc";
 const STATUS_NAMES = ["Queued", "Generating", "Completed", "Failed"];
@@ -335,5 +341,26 @@ export function registerRoutes(app: Express) {
       body: req.body as unknown as BodyInit,
     });
     res.status(result.status).json(result.body);
+  }));
+
+  // Submit a generation whose output lands directly in a Seismic Workspace folder, instead
+  // of a downloadable file. Used by FormPage when opened via open_form_ui with workspace/
+  // origin context.
+  app.post("/api/ucb-generate/:teamSiteId/:versionId", asyncHandler(async (req: Request, res: Response) => {
+    const { teamSiteId, versionId } = req.params;
+    const result = await submitUcbWorkspaceGeneration({
+      teamSiteId,
+      libraryContentVersionId: versionId,
+      ...(req.body as Record<string, unknown>),
+    } as Parameters<typeof submitUcbWorkspaceGeneration>[0]);
+    if ((result as { error?: string }).error) return res.status(400).json(result);
+    res.json(result);
+  }));
+
+  // Poll a UCB Workspace generation's status — auto-commits to Workspace once Ready and
+  // returns a real workspaceUrl.
+  app.get("/api/ucb-status/:generationId", asyncHandler(async (req: Request, res: Response) => {
+    const result = await getUcbWorkspaceGenerationStatus({ generationId: req.params.generationId });
+    res.json(result);
   }));
 }

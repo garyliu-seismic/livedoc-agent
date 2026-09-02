@@ -115,6 +115,36 @@ export interface PrefillValues {
   }>;
 }
 
+// UCB Workspace generation (generate directly into a Workspace folder instead of downloading)
+export interface UcbWorkspaceConfig {
+  spaceId: string;
+  folderId: string;
+  name?: string;
+}
+
+export interface UcbOriginConfig {
+  profileId: string;
+  profileVersionId: string;
+  contentLocation: string;
+}
+
+export interface UcbGenerateRequest {
+  adHocInputs: AdHocInputValue[];
+  variableListData?: VarListInputValue[];
+  regionalFormat?: string;
+  workspace: { spaceId: string; folderId: string; name: string; format: string };
+  origin: UcbOriginConfig;
+}
+
+export interface UcbGenerationStatusResp {
+  generationId: string;
+  status: string;
+  workspaceCommitted: boolean;
+  workspaceUrl?: string | null;
+  commitError?: string;
+  error?: string;
+}
+
 // Generation status
 export interface GeneratedOutput {
   id: string;
