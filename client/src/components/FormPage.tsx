@@ -117,17 +117,21 @@ export default function FormPage() {
     setErrorMsg(null);
     try {
       const payload = buildGenerateRequest(template, formState);
-      // UCB requires exactly one output — take the first selected format.
+      // UCB requires exactly one output. The selected button may bundle multiple formats
+      // (e.g. "PPTX + PDF") in whatever order the API happened to return them — prefer PPTX
+      // explicitly rather than relying on array order, falling back to the first format.
+      const ucbFormat = payload.outputs.find(o => o.format.toUpperCase() === "PPTX")?.format ?? payload.outputs[0].format;
       const endpoint = isUcbMode ? `/api/ucb-generate/${teamSiteId}/${versionId}` : `/api/generate/${teamSiteId}/${versionId}`;
       const body = isUcbMode
         ? {
             adHocInputs: payload.adHocInputs,
             variableListData: payload.variableListData,
+            outputs: [{ format: ucbFormat }],
             workspace: {
               spaceId: ucbWorkspace!.spaceId,
               folderId: ucbWorkspace!.folderId,
               name: ucbWorkspace!.name || template.name || "LiveDoc",
-              format: payload.outputs[0].format,
+              format: ucbFormat,
             },
             origin: ucbOrigin,
           }
