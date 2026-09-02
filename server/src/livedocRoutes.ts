@@ -262,7 +262,10 @@ export function registerRoutes(app: Express) {
   // Poll status
   app.get("/api/status/:generatedLivedocId", async (req: Request, res: Response) => {
     const result = await seismicFetch(`/v3/generatedLivedocs/${req.params.generatedLivedocId}`);
-    if (result.status !== 200) return res.status(result.status).json({ error: "Status check failed", detail: result.body });
+    if (result.status !== 200) {
+      const detail = typeof result.body === "string" ? result.body : JSON.stringify(result.body);
+      return res.status(result.status).json({ error: `Status check failed (HTTP ${result.status}): ${detail}`, detail: result.body });
+    }
     const raw = result.body as Record<string, unknown>;
     const rawOutputs = (raw.outputs ?? raw.Outputs ?? []) as Array<Record<string, unknown>>;
     const outputs = rawOutputs.map(o => ({

@@ -113,6 +113,7 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
         context.push(choice); // assistant turn requesting tool_calls
 
         const realUrls: string[] = [];
+        const formTokens: string[] = [];
 
         for (const tc of choice.tool_calls) {
           const toolName = tc.function.name;
@@ -133,6 +134,8 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
                 realUrls.push(url);
                 formUrl = url;
               }
+              const token = extractField(resultText, "token");
+              if (token) formTokens.push(token);
             }
             if (toolName === "get_ucb_workspace_generation_status") {
               const url = extractField(resultText, "workspaceUrl");
@@ -149,6 +152,14 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
           context.push({
             role: "system",
             content: `真实地址（必须原样复制，不能修改任何字符）：\n${realUrls.join("\n")}`,
+            pinned: true,
+          });
+        }
+
+        if (formTokens.length > 0) {
+          context.push({
+            role: "system",
+            content: `open_form_ui 返回的 token（用户确认提交后调用 get_form_result 时直接用这个值，不要去 URL 里解析）：\n${formTokens.join("\n")}`,
             pinned: true,
           });
         }
