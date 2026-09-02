@@ -424,6 +424,22 @@ export async function submitUcbWorkspaceGeneration(params: {
   workspace: { spaceId: string; folderId: string; name: string; format: string };
   origin: { profileId: string; profileVersionId: string; contentLocation: string };
 }): Promise<Record<string, unknown>> {
+  // Validate up front with clear per-field messages — the model has previously called this
+  // tool omitting required object/array fields entirely, which crashed with an opaque
+  // "Cannot read properties of undefined" instead of a diagnosable error.
+  const missing: string[] = [];
+  if (!Array.isArray(params.outputs) || params.outputs.length === 0) missing.push("outputs (array with exactly one {format,...} entry)");
+  if (!Array.isArray(params.adHocInputs)) missing.push("adHocInputs (array, can be empty)");
+  if (!params.workspace?.spaceId) missing.push("workspace.spaceId");
+  if (!params.workspace?.folderId) missing.push("workspace.folderId");
+  if (!params.workspace?.name) missing.push("workspace.name");
+  if (!params.workspace?.format) missing.push("workspace.format");
+  if (!params.origin?.profileId) missing.push("origin.profileId");
+  if (!params.origin?.profileVersionId) missing.push("origin.profileVersionId");
+  if (!params.origin?.contentLocation) missing.push("origin.contentLocation");
+  if (missing.length > 0) {
+    return { error: "submit_ucb_workspace_generation is missing required fields", detail: `Missing or empty: ${missing.join(", ")}` };
+  }
   if (params.outputs.length !== 1) {
     return { error: "Exactly one output is required for a UCB Workspace generation.", detail: `Got ${params.outputs.length} outputs.` };
   }

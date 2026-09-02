@@ -1,6 +1,7 @@
 import { Router, Request, Response } from "express";
 import dotenv from "dotenv";
 import { TOOL_LIST, handleToolCall } from "./mcp-server.js";
+import { getConversation, saveConversation } from "./conversationStore.js";
 
 dotenv.config();
 
@@ -69,6 +70,28 @@ function stripFabricatedUrls(reply: string, context: any[]): string {
   });
 }
 
+// Only safe to auto-retry idempotent/read-only tools — retrying a generate/submit call
+// could create a duplicate real-world generation, so those always fail straight to the
+// model instead.
+const RETRYABLE_TOOLS = new Set([
+  "search_templates", "get_template_form", "poll_generation_status", "download_generated_file",
+  "list_workspace_spaces", "list_workspace_folders", "get_form_result",
+  "get_ucb_workspace_generation_status", "find_doccenter_profile",
+]);
+
+async function withRetry<T>(fn: () => Promise<T>, retries: number, delayMs: number): Promise<T> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) await new Promise(r => setTimeout(r, delayMs * (attempt + 1)));
+    }
+  }
+  throw lastErr;
+}
+
 function extractField(resultText: string, ...keys: string[]): string | null {
   try {
     const parsed = JSON.parse(resultText);
@@ -106,7 +129,7 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
 
     if (!message) return res.status(400).json({ error: "Missing 'message'" });
 
-    const context = (req.app as any).locals.conversations[sessionId] ?? [];
+    const context = getConversation(sessionId);
     if (context.length === 0) {
       context.push({ role: "system", content: SYSTEM_PROMPT });
     }
@@ -119,7 +142,7 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
     try {
       for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
         const isLastRound = round === MAX_TOOL_ROUNDS - 1;
-        const choice = await callLLM(buildLLMContext(context), !isLastRound);
+        const choice = await withRetry(() => callLLM(buildLLMContext(context), !isLastRound), 2, 800);
 
         if (!choice) {
           llmReply = "Agent 未生成有效内容。";
@@ -148,7 +171,9 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
             // (unlike the OpenAI-compat layer, which sends a JSON string).
             const rawArgs = tc.function.arguments;
             const args = typeof rawArgs === "string" ? JSON.parse(rawArgs || "{}") : (rawArgs ?? {});
-            const result = await handleToolCall(toolName, args);
+            const result = RETRYABLE_TOOLS.has(toolName)
+              ? await withRetry(() => handleToolCall(toolName, args), 2, 500)
+              : await handleToolCall(toolName, args);
             resultText = JSON.stringify(result).slice(0, 4000);
             if (toolName === "download_generated_file") {
               const url = extractField(resultText, "url", "DownloadUrl");
@@ -208,7 +233,7 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
 
     llmReply = stripFabricatedUrls(llmReply, context);
 
-    (req.app as any).locals.conversations[sessionId] = context;
+    saveConversation(sessionId, context);
 
     res.json({ success: true, message: llmReply, toolsUsed, formUrl });
   } catch (err) {

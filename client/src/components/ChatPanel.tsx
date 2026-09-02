@@ -37,11 +37,17 @@ export default function ChatPanel() {
     setInput('');
     setIsSending(true);
 
+    // Without this, a dropped connection (server restart, network blip) leaves the UI stuck
+    // on "Agent is thinking..." forever — fetch never rejects because nothing ever arrives.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5 * 60 * 1000);
+
     try {
       const res = await fetch(`/api/agent/chat/${sessionId}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: userMsg.content }),
+        signal: controller.signal,
       });
       const data = await res.json();
 
@@ -61,12 +67,16 @@ export default function ChatPanel() {
       }
     } catch (err: any) {
       console.error(err);
-      setMessages(prev => [...prev, { 
-        role: 'system', 
-        content: `❌ Error: ${err.message}`, 
-        timestamp: Date.now() 
+      const message = err.name === 'AbortError'
+        ? '请求超时（5 分钟无响应），连接可能已断开。请重试。'
+        : err.message;
+      setMessages(prev => [...prev, {
+        role: 'system',
+        content: `❌ Error: ${message}`,
+        timestamp: Date.now()
       }]);
     } finally {
+      clearTimeout(timeoutId);
       setIsSending(false);
     }
   };
