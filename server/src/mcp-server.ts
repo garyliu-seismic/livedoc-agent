@@ -40,7 +40,7 @@ import {
 export const TOOL_LIST: MCPTool[] = [
   {
     name: "search_templates",
-    description: "Search Seismic content library for templates matching user query. Use when user asks to 'find a template', 'search for slides', etc.",
+    description: "Search Seismic content library for templates matching user query. Use when user asks to 'find a template', 'search for slides', etc. Results may include contentProfiles/profileVersionIds arrays (parallel — profileVersionIds[i] corresponds to contentProfiles[i]) when a result is already published to one or more DocCenter profiles; check there before calling find_doccenter_profile for submit_ucb_workspace_generation's origin.",
     schema: {
       type: "object",
       properties: {

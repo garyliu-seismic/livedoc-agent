@@ -78,7 +78,7 @@ export async function searchTemplates(params: {
   searchText?: string;
   page?: number;
   pageSize?: number;
-}): Promise<{ results: Array<{ title: string; format: string; contentVersionId: string; teamSiteId: string; modifiedDate: string; description: string }>; totalCount: number }> {
+}): Promise<{ results: Array<{ title: string; format: string; contentVersionId: string; teamSiteId: string; modifiedDate: string; description: string; contentProfiles?: string[]; profileVersionIds?: string[] }>; totalCount: number }> {
   const body = {
     searchText: params.searchText ?? "",
     allowPptx: true,
@@ -98,9 +98,12 @@ export async function searchTemplates(params: {
     return { results: [], totalCount: 0 };
   }
 
-  const data = result.body as { totalCount: number; documents: Array<Record<string, string>> };
+  const data = result.body as { totalCount: number; documents: Array<Record<string, any>> };
   return {
     totalCount: data.totalCount ?? 0,
+    // contentProfiles[i] corresponds to profileVersionIds[i] — when present, these can be used
+    // directly as submit_ucb_workspace_generation's origin.profileId/profileVersionId without a
+    // separate find_doccenter_profile lookup.
     results: (data.documents ?? []).map(d => ({
       title: d.title,
       format: d.format,
@@ -108,6 +111,8 @@ export async function searchTemplates(params: {
       teamSiteId: d.teamsite,
       modifiedDate: d.modifiedDate,
       description: d.description,
+      contentProfiles: d.contentProfiles,
+      profileVersionIds: d.profileVersionIds,
     })),
   };
 }
