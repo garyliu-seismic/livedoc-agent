@@ -36,6 +36,19 @@ function deriveIntegrationBaseUrl(baseUrl: string): string {
 
 const INTEGRATION_BASE_URL = process.env.SEISMIC_INTEGRATION_BASE_URL ?? deriveIntegrationBaseUrl(BASE_URL);
 
+// The workspace-browsing endpoints (GetWorkspaceDestinationSpaces/Roots/FolderItems) live in a
+// separate "Document Generator (Internal)" API resource (api-specifications commit 06dc51c1,
+// 2026-09-03), added with its own api_id so it can't collide with the main LiveDoc api_id. Unlike
+// the Integration API, this one is a simple sibling path: "/{env}/livedoc" (prod: "/livedoc") ->
+// "/{env}/livedoc-internal" (prod: "/livedoc-internal"), no extra segment inserted. Mirrors
+// mcp-seismic-livedoc/src/config.ts's deriveInternalBaseUrl.
+function deriveInternalBaseUrl(baseUrl: string): string {
+  const url = new URL(baseUrl);
+  return `${url.origin}${url.pathname.replace(/\/livedoc\/?$/, "/livedoc-internal")}`;
+}
+
+const INTERNAL_BASE_URL = process.env.SEISMIC_INTERNAL_BASE_URL ?? deriveInternalBaseUrl(BASE_URL);
+
 // LDS's APIs never return a browsable URL for a committed Workspace file, so it's built
 // client-side from fileId + the JWT's tenant_fqdn claim. viewType is not format-dependent —
 // "DraftPresentations" is the one value confirmed to work end-to-end, treated as a default.
@@ -390,7 +403,7 @@ export async function findDocCenterProfile(params: { profileName: string; teamSi
 }
 
 export async function listWorkspaceSpaces(): Promise<unknown> {
-  const result = await seismicFetch("/v3/workspace/destinations/spaces");
+  const result = await seismicFetch("/v3/workspace/destinations/spaces", {}, INTERNAL_BASE_URL);
   if (result.status !== 200) {
     return { error: `Listing Workspace spaces failed (HTTP ${result.status})`, detail: result.body };
   }
@@ -408,7 +421,7 @@ export async function listWorkspaceFolders(params: {
   const path = params.folderId
     ? `/v3/workspace/destinations/spaces/${encodeURIComponent(params.spaceId)}/folders/${encodeURIComponent(params.folderId)}/items?offset=${offset}&limit=${limit}`
     : `/v3/workspace/destinations/spaces/${encodeURIComponent(params.spaceId)}/roots`;
-  const result = await seismicFetch(path);
+  const result = await seismicFetch(path, {}, INTERNAL_BASE_URL);
   if (result.status !== 200) {
     return { error: `Listing Workspace folder contents failed (HTTP ${result.status})`, detail: result.body };
   }
