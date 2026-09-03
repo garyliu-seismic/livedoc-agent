@@ -135,7 +135,7 @@ export const TOOL_LIST: MCPTool[] = [
   },
   {
     name: "get_form_result",
-    description: "Check whether the user has submitted the form opened via open_form_ui. Call this on a later turn (after the user confirms they submitted, or when they ask about status) — do not call it immediately after open_form_ui.",
+    description: "Check whether the user has submitted the form opened via open_form_ui. Call this on a later turn (after the user confirms they submitted, or when they ask about status) — do not call it immediately after open_form_ui. The result includes submittedInputs (the adHocInputs/variableListData the user actually submitted — NOT necessarily what prefillValues suggested, since the user can edit before clicking Generate). If the user then asks to also save this same generation to Seismic Workspace, reuse submittedInputs.adHocInputs/variableListData verbatim for the workspace generation request instead of re-deriving or guessing those values.",
     schema: {
       type: "object",
       properties: {

@@ -47,6 +47,15 @@ export default function FormPage() {
   const [generatedId, setGeneratedId] = useState<string | null>(null);
   const [doneStatus, setDoneStatus] = useState<GenerationStatus | null>(null);
   const [ucbDoneStatus, setUcbDoneStatus] = useState<UcbGenerationStatusResp | null>(null);
+  // The exact adHocInputs/variableListData the user submitted (captured in submit(), right
+  // before the fetch) -- NOT necessarily what any prior prefill/chat suggestion contained,
+  // since the user can edit fields before hitting Generate. Reported back to the server so a
+  // later chat turn (e.g. "also save this to Workspace") can reuse the real values instead of
+  // the model having to recall/guess them from earlier turns.
+  const [submittedInputs, setSubmittedInputs] = useState<{
+    adHocInputs: unknown;
+    variableListData: unknown;
+  } | null>(null);
 
   // When generation completes: POST result back to Express so MCP can read it, then auto-close
   useEffect(() => {
@@ -56,7 +65,7 @@ export default function FormPage() {
         fetch(`/api/result/${resultToken}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ generatedLivedocId: doneStatus.generatedLivedocId, outputs: doneStatus.outputs }),
+          body: JSON.stringify({ generatedLivedocId: doneStatus.generatedLivedocId, outputs: doneStatus.outputs, submittedInputs }),
         }).catch(() => {});
       }
       if (allOk) {
@@ -69,13 +78,13 @@ export default function FormPage() {
         fetch(`/api/result/${resultToken}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ generationId: ucbDoneStatus.generationId, workspaceUrl: ucbDoneStatus.workspaceUrl }),
+          body: JSON.stringify({ generationId: ucbDoneStatus.generationId, workspaceUrl: ucbDoneStatus.workspaceUrl, submittedInputs }),
         }).catch(() => {});
       }
       const t = setTimeout(() => window.close(), 2000);
       return () => clearTimeout(t);
     }
-  }, [phase, doneStatus, ucbDoneStatus]);
+  }, [phase, doneStatus, ucbDoneStatus, submittedInputs]);
 
   useEffect(() => {
     if (!teamSiteId || !versionId) {
@@ -117,6 +126,7 @@ export default function FormPage() {
     setErrorMsg(null);
     try {
       const payload = buildGenerateRequest(template, formState);
+      setSubmittedInputs({ adHocInputs: payload.adHocInputs, variableListData: payload.variableListData });
       // UCB requires exactly one output. The selected button may bundle multiple formats
       // (e.g. "PPTX + PDF") in whatever order the API happened to return them — prefer PPTX
       // explicitly rather than relying on array order, falling back to the first format.
