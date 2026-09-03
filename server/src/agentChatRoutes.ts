@@ -242,7 +242,7 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
         }
       }
     } catch (e) {
-      console.error("🔴 Qwen3 Ollama Error:", e);
+      console.error(`🔴 ${OPENAI_MODEL} Ollama Error:`, e);
       llmReply = `❌ AI Agent (${OPENAI_MODEL}) 响应失败。请确保 Ollama 正在运行且模型已加载。\n\n错误详情：${(e as Error).message}`;
     }
 

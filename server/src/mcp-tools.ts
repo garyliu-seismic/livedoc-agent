@@ -256,7 +256,7 @@ export async function pollGenerationStatus(params: { generatedLivedocId: string 
   }
 
   const outputs = rawOutputs.map(o => ({
-    id: o.id ?? o.Id as string,
+    id: o.id ?? (o.Id as string),
     status: statusName(o.status ?? o.Status),
     format: o.format ?? o.Format as string,
     name: o.name ?? o.Name as string,
@@ -423,6 +423,7 @@ interface PendingCommit {
   stageId: string;
   stageRecordId: string;
   committed: boolean;
+  committing?: Promise<{ committed: true } | { error: string; detail?: unknown }>;
 }
 
 const _pendingCommits = new Map<string, PendingCommit>();
@@ -558,7 +559,12 @@ export async function getUcbWorkspaceGenerationStatus(params: { generationId: st
     return { ...response, workspaceCommitted: true, workspaceUrl: buildWorkspaceUrl(pending.fileId) };
   }
 
-  const commitResult = await commitToWorkspace(pending);
+  if (!pending.committing) {
+    pending.committing = commitToWorkspace(pending).finally(() => {
+      pending.committing = undefined;
+    });
+  }
+  const commitResult = await pending.committing;
   if ("error" in commitResult) {
     return { ...response, workspaceCommitted: false, commitError: commitResult.error, commitErrorDetail: commitResult.detail };
   }

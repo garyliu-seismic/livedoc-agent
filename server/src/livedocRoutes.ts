@@ -1,4 +1,5 @@
 import express, { Express, Request, Response, NextFunction } from "express";
+import { Readable } from "node:stream";
 import {
   setRuntimeToken as setMcpRuntimeToken,
   setGenerationResult,
@@ -7,7 +8,7 @@ import {
   getUcbWorkspaceGenerationStatus,
 } from "./mcp-tools.js";
 
-const BASE_URL = process.env.SEISMIC_BASE_URL ?? "https://api.seismic.com/livedoc";
+const BASE_URL = process.env.SEISMIC_BASE_URL ?? "https://api.seismic-dev.com/livedoc";
 const STATUS_NAMES = ["Queued", "Generating", "Completed", "Failed"];
 
 // None of these route bodies had try/catch, so any thrown error (e.g. the fetch timeout
@@ -329,8 +330,10 @@ export function registerRoutes(app: Express) {
     const contentDisposition = fileRes.headers.get("content-disposition") ?? "attachment";
     res.setHeader("Content-Type", contentType);
     res.setHeader("Content-Disposition", contentDisposition);
-    const buf = await fileRes.arrayBuffer();
-    res.send(Buffer.from(buf));
+    const contentLength = fileRes.headers.get("content-length");
+    if (contentLength) res.setHeader("Content-Length", contentLength);
+    if (!fileRes.body) return res.end();
+    Readable.fromWeb(fileRes.body as import("stream/web").ReadableStream).pipe(res);
   }));
 
   // Image upload proxy

@@ -1,11 +1,12 @@
 /**
  * MCP (Model Context Protocol) Server registration.
  * 
- * This file creates a standard MCP server that registers all the Seismic LiveDoc tools
- * so that a local LangChain Agent can discover and call them dynamically — instead of
- * having hardcoded endpoints in the frontend.
- * 
- * MCP protocol supports:
+ * This file is NOT a standard MCP server — it's a TOOL_LIST schema plus a dispatcher
+ * (see callTool below) that a local LangChain Agent uses to discover and call the
+ * Seismic LiveDoc tools dynamically, instead of having hardcoded endpoints in the
+ * frontend. There is no MCP transport (stdio/SSE) or protocol handshake here.
+ *
+ * It mimics the parts of the MCP protocol this agent needs:
  * - Tool discovery (list_tools, get tool schemas)
  * - Dynamic routing (agent chooses which tool to call based on user intent)
  * - Parameter inference (LLM extracts arguments from natural language)
