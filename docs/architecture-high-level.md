@@ -1,6 +1,6 @@
-# mcp-seismic-ledoc — High-Level Architecture
+# livedoc-agent — High-Level Architecture
 
-The **mcp-seismic-ledoc** project is a **local, agent-facing LiveDoc gateway**: a small Express server
+The **livedoc-agent** project is a **local, agent-facing LiveDoc gateway**: a small Express server
 on `localhost:3001` that (a) hosts a React SPA (`client/`) for a user, and (b) acts as a **tool
 front-end for an LLM agent** (a local OpenAI-compatible model, typically running on Ollama).
 
@@ -28,7 +28,7 @@ flowchart TB
     subgraph UI["User's browser"]
         SPA["React SPA (client/)"]
     end
-    subgraph GW["mcp-seismic-ledoc (this repo)"]
+    subgraph GW["livedoc-agent (this repo)"]
         EX["Express gateway (server/src/index.ts)<br/>localhost:3001"]
         ROUTES["Livedoc routes (server/src/livedocRoutes.ts)"]
         MCP["MCP tool layer (server/src/mcp-tools.ts + mcp-server.ts)"]
@@ -43,7 +43,7 @@ flowchart TB
         BSS["BSS blobs (SAS)"]
     end
     SPA <-->|"browser"| EX
-    EX <-->|"read/write| OpenAI-compat"| MODEL
+    EX <-->|"read/write OpenAI-compat"| MODEL
     EX --"/api/agent/chat/:sid"--> CHAT
     CHAT -->|TOOL_LIST + handleToolCall| MCP
     CHAT -->|getConversation/saveConversation| CONV
@@ -135,15 +135,15 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-    ENV[environment variables via dotenv] --> CFG[derive at boot]
-    SB[SEISMIC_BASE_URL "https://api.seismic-dev.com/qa/livedoc"]
-    SB2[SEISMIC_INTEGRATION_BASE_URL]
-    SB3[SEISMIC_INTERNAL_BASE_URL]
-    SB4[SEISMIC_API_TOKEN → Bearer on every call; HOT-RELOAD via /api/set-token]
-    CFG --> LI[LiveDoc base URL = /v3/public]
-    CFG --> I[Integration base URL]
-    CFG --> U[UCB base URL = /v3]
-    ENV -.env file example.-> SB4
+    ENV["environment variables via dotenv"] --> CFG["derive at boot"]
+    SB["SEISMIC_BASE_URL: https://api.seismic-dev.com/qa/livedoc"]
+    SB2["SEISMIC_INTEGRATION_BASE_URL"]
+    SB3["SEISMIC_INTERNAL_BASE_URL"]
+    SB4["SEISMIC_API_TOKEN: Bearer on every call; hot reload via /api/set-token"]
+    CFG --> LI["LiveDoc base URL: /v3/public"]
+    CFG --> I["Integration base URL"]
+    CFG --> U["UCB base URL: /v3"]
+    ENV -.->|env file example| SB4
 ```
 
 All base-URL derivation lives in `server/src/config.ts`:
@@ -159,11 +159,11 @@ All base-URL derivation lives in `server/src/config.ts`:
 
 ```mermaid
 flowchart LR
-    U[User or Agent] -->|search | T[TemplateSearch /api/search → /v3/contents]
-    T -->|select → form/plan| TD[get_template_form → /v3/teamsites/…/livedocVersions/…]
-    TD -->|"many/complex fields"| OP[open_form_ui → FormPage<br/>post /api/result/:token]
-    OP -->|"allComplete"| F[done → UI / client]
-    TD -->|"simple, filled in chat"| AI[generate_live_doc → poll_generation_status → download_generated_file]
+    U["User or Agent"] -->|search| T["TemplateSearch: /api/search to /v3/contents"]
+    T -->|select form or plan| TD["get_template_form: /v3/teamsites/.../livedocVersions/..."]
+    TD -->|many or complex fields| OP["open_form_ui to FormPage<br/>POST /api/result/:token"]
+    OP -->|all complete| F["done: UI or client"]
+    TD -->|simple chat input| AI["generate_live_doc to poll_generation_status to download_generated_file"]
 ```
 
 ## 8. Views (React SPA)
@@ -192,9 +192,9 @@ flowchart LR
 - **Three concurrent LLM processes.** `express` proxy → `llm` via `/v1/chat` (OpenAI-compat, not stdio/SSE).
 - **Token store.** All API calls use `Authorization: Bearer <token>`. The token can be hot-reloaded via
   `POST /api/set-token`, no restart needed.
-- **Guard rail. Read-only tools are always advertised; generate/submit are hidden.
-- **UCB auto-commit. Once the status is Ready, `commitToWorkspace` (a 606 endpoint) runs on the same node,
+- **Guard rail.** Read-only tools are always advertised; generate/submit are hidden.
+- **UCB auto-commit.** Once the status is Ready, `commitToWorkspace` (a 606 endpoint) runs on the same node,
   dedup-guarded; warns if commit context was lost across a restart.
-- **Form-vs-chat entry points. The form UI and chat share the same result token flow.
+- **Form-vs-chat entry points.** The form UI and chat share the same result token flow.
 - **Server-wide.** The server runs `express` (no `@types/express` in this build) with `NODE_ENV` gates on
   `express` behavior; there's no build step, everything is a plain HTTP server.
