@@ -249,18 +249,16 @@ export async function generateLiveDoc(params: {
 // ================================================================
 // Tool 4: poll_generation_status — Poll LiveDoc generation status
 // ================================================================
-export async function pollGenerationStatus(params: { generatedLivedocId: string }): Promise<{ 
-  allDone: boolean; 
+// Same round-starvation risk as get_ucb_workspace_generation_status: poll internally for a
+// bounded budget instead of returning after one check, so the chat loop's limited tool-call
+// rounds aren't spent entirely on polling a still-running generation.
+const GENERATION_POLL_BUDGET_MS = 25_000;
+const GENERATION_POLL_INTERVAL_MS = 2_000;
+
+export async function pollGenerationStatus(params: { generatedLivedocId: string }): Promise<{
+  allDone: boolean;
   outputs: Array<{ id: string; status: string; format: string; name: string; fileName: string; errorString: string | null }>;
 }> {
-  const result = await seismicFetch(`/v3/generatedLivedocs/${params.generatedLivedocId}`);
-  if (result.status !== 200) {
-    throw new Error(`Status check failed: ${JSON.stringify(result.body)}`);
-  }
-
-  const raw = result.body as Record<string, unknown>;
-  const rawOutputs = (raw.outputs ?? raw.Outputs ?? []) as Array<Record<string, unknown>>;
-  
   const STATUS_NAMES = ["Queued", "Generating", "Completed", "Failed"];
   function statusName(raw: unknown): string {
     if (typeof raw === "number" && STATUS_NAMES[raw]) return STATUS_NAMES[raw];
@@ -268,16 +266,31 @@ export async function pollGenerationStatus(params: { generatedLivedocId: string 
     return String(raw);
   }
 
-  const outputs = rawOutputs.map(o => ({
-    id: o.id ?? (o.Id as string),
-    status: statusName(o.status ?? o.Status),
-    format: o.format ?? o.Format as string,
-    name: o.name ?? o.Name as string,
-    fileName: o.fileName ?? o.FileName as string,
-    errorString: (o.errorString ?? o.ErrorString ?? null) as string | null,
-  }));
+  const deadline = Date.now() + GENERATION_POLL_BUDGET_MS;
+  let outputs: Array<{ id: string; status: string; format: string; name: string; fileName: string; errorString: string | null }>;
+  let allDone: boolean;
 
-  const allDone = outputs.every(o => o.status === "Completed" || o.status === "Failed");
+  while (true) {
+    const result = await seismicFetch(`/v3/generatedLivedocs/${params.generatedLivedocId}`);
+    if (result.status !== 200) {
+      throw new Error(`Status check failed: ${JSON.stringify(result.body)}`);
+    }
+
+    const raw = result.body as Record<string, unknown>;
+    const rawOutputs = (raw.outputs ?? raw.Outputs ?? []) as Array<Record<string, unknown>>;
+    outputs = rawOutputs.map(o => ({
+      id: o.id ?? (o.Id as string),
+      status: statusName(o.status ?? o.Status),
+      format: o.format ?? o.Format as string,
+      name: o.name ?? o.Name as string,
+      fileName: o.fileName ?? o.FileName as string,
+      errorString: (o.errorString ?? o.ErrorString ?? null) as string | null,
+    }));
+    allDone = outputs.every(o => o.status === "Completed" || o.status === "Failed");
+
+    if (allDone || Date.now() >= deadline) break;
+    await new Promise(r => setTimeout(r, GENERATION_POLL_INTERVAL_MS));
+  }
 
   return { allDone, outputs };
 }
@@ -544,21 +557,58 @@ async function commitToWorkspace(pending: PendingCommit): Promise<{ committed: t
   return { committed: true };
 }
 
+// Polling budget for a single tool call: previously each call did exactly one status check, so
+// a chat loop with a bounded number of tool-call rounds (MAX_TOOL_ROUNDS in agentChatRoutes.ts)
+// could burn its whole round budget polling a slow-to-finish generation and hit the round limit
+// before status ever reached "Ready" — the model then had no workspaceUrl to report but had
+// already promised one, and fabricated it (observed live). Looping internally here collapses
+// "poll every couple seconds until done" into one tool call for the common case.
+const STATUS_POLL_BUDGET_MS = 25_000;
+const STATUS_POLL_INTERVAL_MS = 2_000;
+
 export async function getUcbWorkspaceGenerationStatus(params: { generationId: string }): Promise<Record<string, unknown>> {
-  const result = await seismicFetch(`/v3/ucb-workspace-generations/${params.generationId}/status`);
-  if (result.status !== 200) {
-    return { error: `Status check failed (HTTP ${result.status})`, detail: result.body };
+  const deadline = Date.now() + STATUS_POLL_BUDGET_MS;
+  let raw: Record<string, unknown>;
+
+  while (true) {
+    const result = await seismicFetch(`/v3/ucb-workspace-generations/${params.generationId}/status`);
+    if (result.status !== 200) {
+      return { error: `Status check failed (HTTP ${result.status})`, detail: result.body };
+    }
+    raw = result.body as Record<string, unknown>;
+    const status = String(raw.status ?? raw.Status ?? "");
+    if (status === "Ready" || Boolean(raw.isCompleted ?? raw.IsCompleted) || Date.now() >= deadline) break;
+    await new Promise(r => setTimeout(r, STATUS_POLL_INTERVAL_MS));
   }
-  const raw = result.body as Record<string, unknown>;
+
   const status = String(raw.status ?? raw.Status ?? "");
+  const isCompleted = Boolean(raw.isCompleted ?? raw.IsCompleted ?? false);
 
   const response: Record<string, unknown> = {
     generationId: String(raw.id ?? raw.Id ?? params.generationId),
     status,
     workspaceCommitted: false,
+    formRecordId: raw.formRecordId ?? raw.FormRecordId ?? null,
   };
 
-  if (status !== "Ready") return response;
+  // This is a terminal state (isCompleted: true) that is NOT "Ready", so without this check the
+  // caller would poll forever until its own timeout instead of stopping immediately. The backend
+  // now includes ErrorMessage on Failure (app-livedoc-service PublicAPIV3Controller.UcbWorkspace.cs) —
+  // previously this endpoint had no error detail at all, so a Failure gave no clue why.
+  if (isCompleted && status !== "Ready") {
+    const errorMessage = String(raw.errorMessage ?? raw.ErrorMessage ?? "").trim();
+    return {
+      ...response,
+      error: `UCB Workspace generation ended with status "${status}"${errorMessage ? `: ${errorMessage}` : ""}`,
+    };
+  }
+  if (status !== "Ready") {
+    return {
+      ...response,
+      message: `Generation is still "${status}" after ${STATUS_POLL_BUDGET_MS / 1000}s of polling. ` +
+        "Call get_ucb_workspace_generation_status again to keep waiting — do not report a workspaceUrl yet.",
+    };
+  }
 
   const pending = _pendingCommits.get(params.generationId);
   if (!pending) {

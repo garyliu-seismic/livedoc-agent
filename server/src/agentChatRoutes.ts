@@ -12,7 +12,11 @@ const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "http://localhost:11434/v
 // is ~3x faster, so tool-calling loop traffic goes there instead of through /v1.
 const OLLAMA_NATIVE_BASE_URL = OPENAI_BASE_URL.replace(/\/v1\/?$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "ornith-1.5:9b";
-const MAX_TOOL_ROUNDS = 8;
+// Each get_ucb_workspace_generation_status / poll_generation_status call now polls internally
+// for up to ~25s before returning, so one round can absorb what used to take several rounds of
+// polling — but a conversation juggling several generations in flight (rule 11) still needs more
+// headroom than a single-document one did, hence 12 instead of the original 8.
+const MAX_TOOL_ROUNDS = 12;
 
 // ====================== MCP -> OpenAI tool schema ======================
 // TOOL_LIST / handleToolCall come from mcp-server.ts, the single source of truth
@@ -47,10 +51,11 @@ CRITICAL_RULES（必须严格遵守，优先级高于其他考虑）：
 4. generate_live_doc / submit_ucb_workspace_generation 会产生真实副作用（提交生成任务），是完全独立的两个决定，严禁在 search_templates/get_template_form 之后自动连着调用——即使 rule 3 让你连续查询，查完就必须停下来。只有当用户在本轮对话里明确说了"生成"/"提交"/"submit"/"generate" 这类词，并且你已经从用户或表单结果里拿到了每一个必填字段的明确值时，才能调用；绝不能用样例值、占位符、或看起来合理但用户没说过的数据去猜。generatedLivedocId 只能是 generate_live_doc/submit_ucb_workspace_generation 自己返回的值，或用户明确告诉你的值，绝不能用 contentVersionId/teamSiteId 等其他 id 顶替。
 5. 严禁自己拼接、猜测或臆造任何 URL（下载链接、表单链接、Workspace 链接等）。下载地址只能来自 download_generated_file 返回的 url 字段；表单链接只能来自 open_form_ui 返回的 url 字段；Workspace 文档链接只能来自 get_ucb_workspace_generation_status 返回的 workspaceUrl 字段。回复用户时必须原样复制，一个字符都不能改，也不能用 teamSiteId/versionId/blobId/fileId 等参数自己拼出新地址。如果还没调用过对应工具，就不要在回复里给出任何链接。
 6. 字段较多或包含表格/变量列表等复杂结构的模板，不要在聊天里逐个字段追问用户，改为调用 open_form_ui 把链接给用户，请他们填完提交；不要在同一轮里紧接着调用 get_form_result（用户还没来得及填），等用户确认已提交、或用户主动询问进度时，再用 open_form_ui 返回的 token 调用 get_form_result。如果用户还提到了"保存到 workspace"/"UCB"等，调用 open_form_ui 时要一并传入 workspace（spaceId/folderId，来自 list_workspace_spaces/list_workspace_folders 的真实值）和 origin（profileId/profileVersionId/contentLocation，来自 search_templates 结果/find_doccenter_profile/用户提供），表单页面会自动识别并走 Workspace 提交流程；否则不要传 workspace/origin，表单走默认的下载生成流程。
-7. 当用户直接在聊天里（不通过 open_form_ui 表单）提供字段值、想把文档生成到 Seismic Workspace 时，用 submit_ucb_workspace_generation；提交前必须先用 list_workspace_spaces/list_workspace_folders 拿到真实的 spaceId/folderId，origin.profileId/profileVersionId/contentLocation 优先从 search_templates 结果或 find_doccenter_profile 拿，拿不到就问用户，不能瞎填。spaceId/folderId/generationId 必须逐字使用 list_workspace_spaces/list_workspace_folders/submit_ucb_workspace_generation 真实返回过的值，严禁编造或从记忆里拼一个"看起来像"的 id；如果不确定某个 id 是否真实存在，重新调用对应工具确认，不要凭印象使用。提交后反复调用 get_ucb_workspace_generation_status 轮询直到 workspaceCommitted 为 true，再把 workspaceUrl 原样给用户。
+7. 当用户直接在聊天里（不通过 open_form_ui 表单）提供字段值、想把文档生成到 Seismic Workspace 时，用 submit_ucb_workspace_generation；提交前必须先用 list_workspace_spaces/list_workspace_folders 拿到真实的 spaceId/folderId，origin.profileId/profileVersionId/contentLocation 优先从 search_templates 结果或 find_doccenter_profile 拿，拿不到就问用户，不能瞎填。spaceId/folderId/generationId 必须逐字使用 list_workspace_spaces/list_workspace_folders/submit_ucb_workspace_generation 真实返回过的值，严禁编造或从记忆里拼一个"看起来像"的 id；如果不确定某个 id 是否真实存在，重新调用对应工具确认，不要凭印象使用。提交后调用 get_ucb_workspace_generation_status 轮询直到 workspaceCommitted 为 true，再把 workspaceUrl 原样给用户；这个工具内部会自己等待一段时间，如果它返回的 message 里说"仍在处理中/still ... call again"，就再调用一次它本身，不要凭空给出 workspaceUrl，也不要在还没等到 workspaceCommitted:true 前就告诉用户"已生成完成"或编一个链接——如实告诉用户"还在生成中，请稍后再问"即可。
 8. 提交 generate_live_doc/submit_ucb_workspace_generation 前，如果 get_template_form 返回的某个必填字段用户没有明确提供，先根据字段名称、类型或模板里的默认值猜一个合理的默认值，明确告诉用户"我打算用 XX 作为 YY 字段的值，可以吗"并等待确认，不要直接拿空值/占位符硬提交导致报错，也不要不给建议就抛出"缺少信息"打回给用户。
 9. 只有在调用工具后仍缺少必要参数时，才向用户提问。
-10. 工具返回 error/detail 时，必须把 detail 里的具体字段名和报错原因原文（或翻译）直接告诉用户是哪个字段、什么值出了问题，不要让用户自己去猜"可能是 A，也可能是 B，也可能是 C"；如果 detail 指向某个具体参数（例如 workspace.spaceId、origin.profileId、outputs[0].regionalFormat），点名该参数并说明本次实际传了什么值、正确格式应该是什么。`;
+10. 工具返回 error/detail 时，必须把 detail 里的具体字段名和报错原因原文（或翻译）直接告诉用户是哪个字段、什么值出了问题，不要让用户自己去猜"可能是 A，也可能是 B，也可能是 C"；如果 detail 指向某个具体参数（例如 workspace.spaceId、origin.profileId、outputs[0].regionalFormat），点名该参数并说明本次实际传了什么值、正确格式应该是什么。
+11. 同一次对话里用户可以连续生成多份文档，每次生成互相独立：每份文档都有自己的 generatedLivedocId 或 generationId，之前那份的 id 绝不能用在新一次生成上，反之亦然。当用户说"这份""第一份""刚才那个"等指代时，按时间顺序结合文件名/模板名判断具体指哪一次生成的结果，如果有歧义就向用户确认是哪一次，不要默认选最新的一次。同一次对话里，有的文档用户可能选择下载、有的选择存到 Workspace，两者互不影响，分别按 rule 6/7 的流程各自处理，不要因为已经处理过一份下载/Workspace 请求就假设这次也要用同样的方式。`;
 
 // Keep short "grounding" reminders (real URLs/tokens) visible to the LLM even
 // once the raw conversation grows past the recent-window cutoff below.
@@ -165,7 +170,10 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
         }
 
         if (!choice.tool_calls || choice.tool_calls.length === 0 || isLastRound) {
-          llmReply = choice.content || "已达到最大工具调用轮数，请根据上方工具结果自行判断。";
+          llmReply = choice.content ||
+            (isLastRound
+              ? "已达到最大工具调用轮数。如果某份文档还没有真实的下载链接或 workspaceUrl，请如实告诉用户仍在处理中、可以再问一次进度，绝不能编造链接。"
+              : "");
           context.push({ role: "assistant", content: llmReply });
           break;
         }

@@ -152,7 +152,23 @@ export default function FormPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const data = await res.json();
+      // Read as text first — an empty/truncated body (e.g. the dev server restarting mid-request
+      // under tsx watch) makes res.json() throw a bare "Unexpected end of JSON input" with no way
+      // to tell what actually happened. Parsing text ourselves lets us surface the HTTP status and
+      // whatever raw body did come back instead of that opaque message.
+      const rawText = await res.text();
+      let data: any;
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        const snippet = rawText.slice(0, 300);
+        throw new Error(
+          `Server returned an invalid response (HTTP ${res.status}${res.statusText ? ` ${res.statusText}` : ""}). ` +
+          (snippet
+            ? `Raw response: ${snippet}${rawText.length > 300 ? "…" : ""}`
+            : "Response body was empty — the dev server may have restarted mid-request; please retry.")
+        );
+      }
       if (!res.ok) {
         const detail = data.detail ? (typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail)) : "";
         throw new Error(`${data.error ?? `HTTP ${res.status}`}${detail ? `: ${detail}` : ""}`);
