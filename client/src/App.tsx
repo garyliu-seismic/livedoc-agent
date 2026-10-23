@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, NavLink, useLocation } from "react-router-dom";
 import TemplateSearch from "./components/TemplateSearch";
 import ChatPanel from "./components/ChatPanel";
 import FormPage from "./components/FormPage";
@@ -31,6 +31,12 @@ const styles = `
   .divider { border: none; border-top: 1px solid #e5e5e5; margin: 24px 0; }
 `;
 
+// /form used to be the chat page; keep old links (and query params) working.
+function LegacyFormRedirect() {
+  const { search } = useLocation();
+  return <Navigate to={`/chat${search}`} replace />;
+}
+
 export default function App() {
   return (
     <>
@@ -38,11 +44,15 @@ export default function App() {
       <BrowserRouter>
         <header className="app-header">
           <span className="app-logo">LiveDoc Generator</span>
+          <NavLink to="/" end style={{ fontSize: 13, marginLeft: 12 }}>Chat</NavLink>
+          <NavLink to="/search" style={{ fontSize: 13 }}>Search</NavLink>
         </header>
         <main className="app-main">
           <Routes>
-            <Route path="/" element={<TemplateSearch />} />
-            <Route path="/form" element={<ChatPanel />} />
+            <Route path="/" element={<ChatPanel />} />
+            <Route path="/chat" element={<ChatPanel />} />
+            <Route path="/search" element={<TemplateSearch />} />
+            <Route path="/form" element={<LegacyFormRedirect />} />
             <Route path="/fill" element={<FormPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

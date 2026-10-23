@@ -39,7 +39,7 @@ export default function TemplateSearch() {
   }
 
   function select(t: TemplateResult) {
-    navigate(`/form?teamSiteId=${t.teamSiteId}&versionId=${t.contentVersionId}`);
+    navigate(`/chat?teamSiteId=${t.teamSiteId}&versionId=${t.contentVersionId}`);
   }
 
   return (

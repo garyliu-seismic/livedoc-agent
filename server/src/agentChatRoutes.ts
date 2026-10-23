@@ -74,7 +74,26 @@ function buildLLMContext(context: any[]): any[] {
   const recentSet = new Set(recent);
   const extraPinned = pinned.filter(m => !recentSet.has(m));
   const combined = recent[0] === systemPrompt ? recent : [systemPrompt, ...extraPinned, ...recent];
-  return combined.map(({ pinned, ...rest }: any) => rest);
+  return dropOrphanToolMessages(combined.map(({ pinned, ...rest }: any) => rest));
+}
+
+// OpenAI-style APIs (LLMG) reject a role:"tool" message unless it answers a tool_call from the
+// preceding assistant message. Trimming to RECENT_WINDOW can cut between an assistant tool_calls
+// turn and its tool replies; Ollama tolerated that, LLMG returns 400. Drop any such orphans.
+function dropOrphanToolMessages(messages: any[]): any[] {
+  const out: any[] = [];
+  let pendingIds = new Set<string>();
+  for (const m of messages) {
+    if (m.role === "assistant") {
+      pendingIds = new Set((m.tool_calls ?? []).map((tc: any) => tc.id).filter(Boolean));
+      out.push(m);
+    } else if (m.role === "tool") {
+      if (m.tool_call_id && pendingIds.has(m.tool_call_id)) out.push(m);
+    } else {
+      out.push(m);
+    }
+  }
+  return out;
 }
 
 // Last-resort safety net: prompt rules alone aren't reliable against a small local model
@@ -248,6 +267,7 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
 
         const realUrls: string[] = [];
         const formTokens: string[] = [];
+        const pinnedResults: any[] = [];
 
         for (const tc of choice.tool_calls) {
           const toolName = tc.function.name;
@@ -290,13 +310,17 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
           // verbatim in later tool calls — pin them so a long conversation doesn't push
           // them out of the recent-window and cause the model to invent/misremember one.
           if (["list_workspace_spaces", "list_workspace_folders", "submit_ucb_workspace_generation"].includes(toolName)) {
-            context.push({
+            // Deferred until every tool reply of this round is in: a system message between
+            // two tool replies breaks the "tool_calls must be followed by all their tool replies" rule.
+            pinnedResults.push({
               role: "system",
               content: `${toolName} 的真实结果（后续引用其中的 id 时必须原样使用，不能编造）：\n${resultText}`,
               pinned: true,
             });
           }
         }
+
+        context.push(...pinnedResults);
 
         if (realUrls.length > 0) {
           context.push({
