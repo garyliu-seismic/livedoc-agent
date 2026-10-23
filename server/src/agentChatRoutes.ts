@@ -12,6 +12,12 @@ const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "http://localhost:11434/v
 // is ~3x faster, so tool-calling loop traffic goes there instead of through /v1.
 const OLLAMA_NATIVE_BASE_URL = OPENAI_BASE_URL.replace(/\/v1\/?$/, "");
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "ornith-1.5:9b";
+// When LLMG_BASE_URL is set the chat route uses the Seismic LLM Gateway instead of local Ollama.
+const LLMG_BASE_URL = process.env.LLMG_BASE_URL || "";
+const LLMG_TOKEN = process.env.LLMG_TOKEN || "";
+const LLMG_MODEL = process.env.LLMG_MODEL || "gpt-5.4-2026-03-05";
+const LLMG_FEATURE_ID = process.env.LLMG_FEATURE_ID || "demo";
+const ACTIVE_MODEL = LLMG_BASE_URL ? LLMG_MODEL : OPENAI_MODEL;
 // Each get_ucb_workspace_generation_status / poll_generation_status call now polls internally
 // for up to ~25s before returning, so one round can absorb what used to take several rounds of
 // polling — but a conversation juggling several generations in flight (rule 11) still needs more
@@ -121,8 +127,67 @@ function extractField(resultText: string, ...keys: string[]): string | null {
   return null;
 }
 
+// Case-insensitive property read: LLMG returns camelCase (non-stream) or PascalCase (stream) keys.
+function ci(obj: any, key: string): any {
+  if (obj == null || typeof obj !== "object") return undefined;
+  const k = Object.keys(obj).find(x => x.toLowerCase() === key.toLowerCase());
+  return k === undefined ? undefined : obj[k];
+}
+
+// LLMG (Seismic LLM Gateway) is OpenAI-like but not OpenAI-standard: camelCase keys, and
+// tool_call arguments as a JSON string. Normalize into the same shape callLLM's Ollama path
+// returns, plus an OpenAI-form assistant message that is safe to echo back on the next round.
+function normalizeLlmgMessage(data: any): any {
+  const choices = ci(data, "choices");
+  const choice = Array.isArray(choices) ? choices[0] : choices;
+  const msg = ci(choice, "message");
+  if (!msg) return null;
+  const rawCalls = ci(msg, "toolCalls") ?? ci(msg, "tool_calls");
+  const toolCalls = Array.isArray(rawCalls) ? rawCalls.map((tc: any, i: number) => {
+    const fn = ci(tc, "function");
+    const args = ci(fn, "arguments");
+    return {
+      id: ci(tc, "id") ?? `call_${i}`,
+      type: "function",
+      function: {
+        name: ci(fn, "name"),
+        arguments: typeof args === "string" ? args : JSON.stringify(args ?? {}),
+      },
+    };
+  }) : [];
+  return {
+    role: "assistant",
+    content: ci(msg, "content") ?? "",
+    ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+  };
+}
+
+async function callLlmg(messages: any[], tools: any[] | null): Promise<any> {
+  if (!LLMG_TOKEN) throw new Error("LLMG_TOKEN is not set (aiml_llm delegation token required)");
+  const resp = await fetch(LLMG_BASE_URL.replace(/\/$/, "") + "/v1/chat/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${LLMG_TOKEN}` },
+    body: JSON.stringify({
+      model: LLMG_MODEL,
+      featureId: LLMG_FEATURE_ID,
+      messages,
+      ...(tools ? { tools, toolChoice: "auto" } : {}),
+    }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!resp.ok) {
+    const body = (await resp.text().catch(() => "")).slice(0, 300);
+    const hint = resp.status === 401 || resp.status === 403 ? " (LLMG_TOKEN expired or lacks aiml_llm scope)"
+      : resp.status === 429 ? ` (LLMG busy, Retry-After=${resp.headers.get("retry-after") ?? "n/a"})`
+      : "";
+    throw new Error(`LLMG API returned ${resp.status}${hint}: ${body}`);
+  }
+  return normalizeLlmgMessage(await resp.json());
+}
+
 async function callLLM(messages: any[], useTools: boolean, allowWriteTools: boolean): Promise<any> {
   const tools = allowWriteTools ? TOOLS_SCHEMA : TOOLS_SCHEMA.filter(t => !WRITE_TOOLS.has(t.function.name));
+  if (LLMG_BASE_URL) return callLlmg(messages, useTools ? tools : null);
   const resp = await fetch(OLLAMA_NATIVE_BASE_URL + "/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -250,8 +315,9 @@ router.post("/api/agent/chat/:sessionId", async (req: Request, res: Response) =>
         }
       }
     } catch (e) {
-      console.error(`🔴 ${OPENAI_MODEL} Ollama Error:`, e);
-      llmReply = `❌ AI Agent (${OPENAI_MODEL}) 响应失败。请确保 Ollama 正在运行且模型已加载。\n\n错误详情：${(e as Error).message}`;
+      console.error(`🔴 ${ACTIVE_MODEL} ${LLMG_BASE_URL ? "LLMG" : "Ollama"} Error:`, e);
+      const hint = LLMG_BASE_URL ? "请检查 LLMG_BASE_URL / LLMG_TOKEN（token 可能已过期）及网络代理。" : "请确保 Ollama 正在运行且模型已加载。";
+      llmReply = `❌ AI Agent (${ACTIVE_MODEL}) 响应失败。${hint}\n\n错误详情：${(e as Error).message}`;
     }
 
     llmReply = stripFabricatedUrls(llmReply, context);
