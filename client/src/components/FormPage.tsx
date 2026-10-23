@@ -205,7 +205,7 @@ export default function FormPage() {
     return (
       <div>
         <div className="error-box" style={{ marginBottom: 16 }}>{errorMsg}</div>
-        <button className="btn btn-secondary" onClick={() => navigate("/")}>← Back to Search</button>
+        <button className="btn btn-secondary" onClick={() => navigate("/search")}>← Back to Search</button>
       </div>
     );
   }
@@ -290,7 +290,7 @@ export default function FormPage() {
     <div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
         <div>
-          <button className="btn btn-secondary" style={{ marginBottom: 12, fontSize: 13 }} onClick={() => navigate("/")}>← Back</button>
+          <button className="btn btn-secondary" style={{ marginBottom: 12, fontSize: 13 }} onClick={() => navigate("/search")}>← Back</button>
           {!template?.name && <div className="section-title" style={{ margin: 0 }}>Fill Out Template</div>}
           {context && (
             <div style={{ fontSize: 13, color: "#666", marginTop: 4 }}>
